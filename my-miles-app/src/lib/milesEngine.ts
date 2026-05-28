@@ -254,13 +254,9 @@ function calculateMilesForCard(
     const projectedTotal = accumulatedUsage + amountHKD;
     if (projectedTotal < card.min_spend_hkd) {
       isBelowMinSpend = true;
-      const applyToLabel: Record<string, string> = {
-        all: '全部簽費',
-        local: '本地簽費',
-        overseas: '海外簽費',
-        category: `${category}分類簽費`,
-      };
-      minSpendNote = `需達 HKD ${card.min_spend_hkd.toLocaleString()}（${applyToLabel[applyTo]}）最低消費`;
+      // 差額 = 最低消費 - 「現在の累積 + 今回の金額」
+      const shortfall = card.min_spend_hkd - projectedTotal;
+      minSpendNote = `未達最低要求 HKD ${card.min_spend_hkd.toLocaleString()}，還欠 HKD ${Math.ceil(shortfall).toLocaleString()} 才達到要求`;
     }
   }
 
@@ -285,8 +281,8 @@ function calculateMilesForCard(
       milesEarned: parseFloat((amountHKD / forcedRate).toFixed(2)),
       effectiveRate: forcedRate,
       baseRate: card.base_rate,
-      isCapped: true,
-      cappedNote: '未達最低消費要求，暫計基本里數',
+      isCapped: false,          // cappedNote を非表示にする（minSpendNote のみ表示）
+      cappedNote: undefined,
       isOverseasBonus: false,
       isBelowMinSpend: true,
       minSpendNote,

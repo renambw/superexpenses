@@ -441,13 +441,14 @@ export default function HomePage() {
                               ⚠ 未達最低消費
                             </span>
                           )}
+                          {/* 上限到達バッジ（最低消費未達時は表示しない） */}
                         </div>
                         <p
                           className="text-xs"
                           style={{ color: isBest && !isSaved ? 'rgba(255,253,249,0.80)' : '#A8948A' }}
                         >
                           HKD {rec.effectiveRate}/里
-                          {rec.isCapped && (
+                          {rec.isCapped && !rec.isBelowMinSpend && (
                             <span style={{ color: isBest && !isSaved ? '#FDECE4' : '#D4956A' }}>
                               {' '}⚠ 已達上限
                             </span>
