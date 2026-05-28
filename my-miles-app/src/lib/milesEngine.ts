@@ -1,152 +1,154 @@
 // src/lib/milesEngine.ts
+//
+// 設計方針：
+//   - 信用卡規則は全て Supabase の credit_cards テーブルから読み込む
+//   - ハードコードされた CARD_RULES 配列を廃止し、DB 駆動型に移行
+//   - カードルールは 60 秒間キャッシュして API 呼び出しを最小化
+//   - 計分ロジック（上限追蹤・加重平均）は変更なし
+
 import { supabase } from './supabase';
 import type {
   Category,
-  CardName,
+  CreditCard,
   CardRecommendation,
   TransactionInput,
   MonthlyCardUsage,
 } from '@/types';
 
 // ============================================================
-// 信用卡規則定義
+// カードルールのキャッシュ（60 秒 TTL）
 // ============================================================
+let cardRulesCache: CreditCard[] | null = null;
+let cardRulesCachedAt = 0;
+const CACHE_TTL_MS = 60_000;
 
-interface CardRule {
-  name: CardName;
-  baseRate: number;
-  overseasRate?: number;
-  categoryRates?: Partial<Record<Category, number>>;
-  monthlyCap?: {
-    limitHKD: number;
-    capRate: number;
-    applyTo: 'overseas' | 'category' | 'all';
-  };
+export async function fetchCardRules(forceRefresh = false): Promise<CreditCard[]> {
+  const now = Date.now();
+  if (!forceRefresh && cardRulesCache && now - cardRulesCachedAt < CACHE_TTL_MS) {
+    return cardRulesCache;
+  }
+
+  const { data, error } = await supabase
+    .from('credit_cards')
+    .select('*')
+    .order('name');
+
+  if (error || !data) {
+    console.error('credit_cards テーブルの読み込みに失敗しました：', error?.message);
+    // キャッシュが残っていれば古いデータを返す（フォールバック）
+    if (cardRulesCache) return cardRulesCache;
+    throw new Error('信用卡規則の読み込みに失敗しました。Supabase の接続を確認してください。');
+  }
+
+  cardRulesCache = data as CreditCard[];
+  cardRulesCachedAt = now;
+  return cardRulesCache;
 }
 
-const CARD_RULES: CardRule[] = [
-  {
-    name: '渣打 Cathay 卡',
-    baseRate: 6,
-    overseasRate: 4,
-    categoryRates: { '飲食': 4 },
-  },
-  {
-    name: 'AE Explorer',
-    baseRate: 5,
-    overseasRate: 4,
-  },
-  {
-    name: 'AE 白金細頭',
-    baseRate: 6.25,
-    overseasRate: 5,
-    categoryRates: { '飲食': 5, '購物': 5 },
-  },
-  {
-    name: 'HSBC EveryMile',
-    baseRate: 6,
-    categoryRates: { '交通': 2, '飲食': 3 },
-    monthlyCap: {
-      limitHKD: 4000,
-      capRate: 6,
-      applyTo: 'category',
-    },
-  },
-  {
-    name: 'BOC Cheers',
-    baseRate: 15,
-    overseasRate: 1.5,
-    categoryRates: { '飲食': 1.5 },
-    monthlyCap: {
-      limitHKD: 25000,
-      capRate: 15,
-      applyTo: 'all',
-    },
-  },
-];
+/** キャッシュを強制クリアする（Admin ページで保存後に呼び出す） */
+export function invalidateCardRulesCache(): void {
+  cardRulesCache = null;
+  cardRulesCachedAt = 0;
+}
 
 // ============================================================
-// 本月各卡片累積簽帳額を取得する
+// 本月各カードの累積消費額を取得
 // ============================================================
-
-async function getMonthlyUsageMap(): Promise<Map<CardName, number>> {
+async function getMonthlyUsageMap(): Promise<Map<string, number>> {
   const { data, error } = await supabase
     .from('monthly_card_usage')
     .select('card_used, total_hkd_this_month');
 
   if (error || !data) {
-    console.error('無法取得本月信用卡使用量：', error?.message);
+    console.error('monthly_card_usage の読み込みに失敗しました：', error?.message);
     return new Map();
   }
 
-  const usageMap = new Map<CardName, number>();
+  const usageMap = new Map<string, number>();
   (data as MonthlyCardUsage[]).forEach((row) => {
     usageMap.set(row.card_used, Number(row.total_hkd_this_month));
   });
-
   return usageMap;
 }
 
 // ============================================================
-// 核心計分函式
+// 1 枚のカードに対する里数計算
 // ============================================================
-
 function calculateMilesForCard(
-  card: CardRule,
+  card: CreditCard,
   input: TransactionInput,
   currentMonthlyUsage: number
 ): CardRecommendation {
   const { amountHKD, currency, category } = input;
   const isOverseas = currency !== 'HKD';
 
-  let effectiveRate = card.baseRate;
+  let effectiveRate = card.base_rate;
   let isCapped = false;
   let cappedNote: string | undefined;
   let isOverseasBonus = false;
+  let isBelowMinSpend = false;
+  let minSpendNote: string | undefined;
 
-  // 步驟 1：確定基礎適用利率（特定分類 > 海外加成 > 基本利率）
-  if (card.categoryRates?.[category] !== undefined) {
-    effectiveRate = card.categoryRates[category]!;
-  } else if (isOverseas && card.overseasRate !== undefined) {
-    effectiveRate = card.overseasRate;
+  // ── ステップ 1：最低消費額チェック ──────────────────────────
+  if (card.min_spend_hkd !== null && amountHKD < card.min_spend_hkd) {
+    isBelowMinSpend = true;
+    minSpendNote = `需達 HKD ${card.min_spend_hkd.toLocaleString()} 最低消費`;
+    // 最低消費未達でも計算は続行（ユーザーに情報を提示するため）
+  }
+
+  // ── ステップ 2：適用利率を決定（優先順位：分類 > 海外 > 基本）──
+  const catRate = card.category_rates?.[category as Category];
+  if (catRate !== undefined) {
+    effectiveRate = catRate;
+  } else if (isOverseas && card.overseas_rate !== null) {
+    effectiveRate = card.overseas_rate;
     isOverseasBonus = true;
   }
 
-  // 步驟 2：檢查每月回贈上限並降級
-  if (card.monthlyCap) {
-    const { limitHKD, capRate, applyTo } = card.monthlyCap;
+  // ── ステップ 3：月間上限チェックと加重平均計算 ──────────────
+  if (
+    card.monthly_cap_limit !== null &&
+    card.monthly_cap_rate !== null &&
+    card.monthly_cap_apply_to !== null
+  ) {
+    const { monthly_cap_limit, monthly_cap_rate, monthly_cap_apply_to } = card;
+
     const isSubjectToCap =
-      applyTo === 'all' ||
-      (applyTo === 'overseas' && isOverseas) ||
-      (applyTo === 'category' && card.categoryRates?.[category] !== undefined);
+      monthly_cap_apply_to === 'all' ||
+      (monthly_cap_apply_to === 'overseas' && isOverseas) ||
+      (monthly_cap_apply_to === 'category' && catRate !== undefined);
 
     if (isSubjectToCap) {
-      const remainingCap = limitHKD - currentMonthlyUsage;
+      const remainingCap = monthly_cap_limit - currentMonthlyUsage;
 
       if (remainingCap <= 0) {
-        // 已完全超過上限
-        effectiveRate = capRate;
+        // 上限を完全に超過：優遇レートなし
+        effectiveRate = monthly_cap_rate;
         isCapped = true;
-        cappedNote = `本月優惠額度已用盡（上限 HKD ${limitHKD.toLocaleString()}）`;
+        cappedNote = `本月優惠額度已用盡（上限 HKD ${monthly_cap_limit.toLocaleString()}）`;
       } else if (remainingCap < amountHKD) {
-        // 部分超過上限：計算加權平均里數
+        // 部分超過：加重平均で計算
         const preferentialRate =
-          card.categoryRates?.[category] ??
-          (isOverseas ? card.overseasRate : undefined) ??
-          card.baseRate;
-        const milesInCap = remainingCap / preferentialRate;
-        const milesOverCap = (amountHKD - remainingCap) / capRate;
-        const totalMiles = milesInCap + milesOverCap;
+          catRate ??
+          (isOverseas && card.overseas_rate !== null ? card.overseas_rate : null) ??
+          card.base_rate;
+
+        const milesInCap   = remainingCap / preferentialRate;
+        const milesOverCap = (amountHKD - remainingCap) / monthly_cap_rate;
+        const totalMiles   = milesInCap + milesOverCap;
         const weightedRate = amountHKD / totalMiles;
 
         return {
+          cardId: card.id,
           cardName: card.name,
           milesEarned: parseFloat(totalMiles.toFixed(2)),
           effectiveRate: parseFloat(weightedRate.toFixed(2)),
-          baseRate: card.baseRate,
+          baseRate: card.base_rate,
           isCapped: true,
           cappedNote: `部分金額（HKD ${remainingCap.toLocaleString()}）享優惠，超出部分套用基本里數`,
           isOverseasBonus,
+          isBelowMinSpend,
+          minSpendNote,
         };
       }
     }
@@ -155,34 +157,40 @@ function calculateMilesForCard(
   const milesEarned = amountHKD / effectiveRate;
 
   return {
+    cardId: card.id,
     cardName: card.name,
     milesEarned: parseFloat(milesEarned.toFixed(2)),
     effectiveRate,
-    baseRate: card.baseRate,
+    baseRate: card.base_rate,
     isCapped,
     cappedNote,
     isOverseasBonus,
+    isBelowMinSpend,
+    minSpendNote,
   };
 }
 
 // ============================================================
-// 公開 API：推薦信用卡排行
+// 公開 API：推薦信用卡ランキング（DB から規則を読み込む）
 // ============================================================
-
 export async function recommendCards(
   input: TransactionInput
 ): Promise<CardRecommendation[]> {
-  const usageMap = await getMonthlyUsageMap();
+  // 並列で取得してレイテンシを最小化
+  const [cards, usageMap] = await Promise.all([
+    fetchCardRules(),
+    getMonthlyUsageMap(),
+  ]);
 
-  const recommendations = CARD_RULES.map((card) => {
+  const recommendations = cards.map((card) => {
     const currentUsage = usageMap.get(card.name) ?? 0;
     return calculateMilesForCard(card, input, currentUsage);
   });
 
+  // 里数の多い順にソート。同点の場合は上限未達を優先
   return recommendations.sort((a, b) => {
-    if (Math.abs(b.milesEarned - a.milesEarned) > 0.01) {
-      return b.milesEarned - a.milesEarned;
-    }
+    const diff = b.milesEarned - a.milesEarned;
+    if (Math.abs(diff) > 0.01) return diff;
     return Number(a.isCapped) - Number(b.isCapped);
   });
 }

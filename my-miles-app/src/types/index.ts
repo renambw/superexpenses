@@ -11,13 +11,30 @@ export type Category =
   | '醫療/保險'
   | '雜項';
 
-export type CardName =
-  | '渣打 Cathay 卡'
-  | 'AE Explorer'
-  | 'AE 白金細頭'
-  | 'HSBC EveryMile'
-  | 'BOC Cheers';
+// CardName は DB の name カラムに合わせて string に拡張
+// （Admin ページで新しいカードを追加できるようにするため）
+export type CardName = string;
 
+// ============================================================
+// Supabase credit_cards テーブルの型定義
+// ============================================================
+export type MonthlyCapApplyTo = 'all' | 'overseas' | 'category';
+
+export interface CreditCard {
+  id: string;
+  name: string;
+  base_rate: number;
+  overseas_rate: number | null;
+  category_rates: Partial<Record<Category, number>>;
+  min_spend_hkd: number | null;
+  monthly_cap_limit: number | null;
+  monthly_cap_rate: number | null;
+  monthly_cap_apply_to: MonthlyCapApplyTo | null;
+}
+
+// ============================================================
+// アプリケーション内部で使用する型
+// ============================================================
 export interface TransactionInput {
   amountOriginal: number;
   currency: string;
@@ -28,6 +45,7 @@ export interface TransactionInput {
 }
 
 export interface CardRecommendation {
+  cardId: string;
   cardName: CardName;
   milesEarned: number;
   effectiveRate: number;
@@ -35,6 +53,8 @@ export interface CardRecommendation {
   isCapped: boolean;
   cappedNote?: string;
   isOverseasBonus: boolean;
+  isBelowMinSpend: boolean;
+  minSpendNote?: string;
 }
 
 export interface Transaction {
