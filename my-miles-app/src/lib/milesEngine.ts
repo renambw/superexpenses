@@ -1,11 +1,15 @@
 // src/lib/milesEngine.ts
 //
-// 設計方針：
-//   - 信用卡規則は全て Supabase の credit_cards テーブルから読み込む
-//   - ハードコードされた CARD_RULES 配列を廃止し、DB 駆動型に移行
-//   - カードルールは 60 秒間キャッシュして API 呼び出しを最小化
-//   - 上限追蹤：月間上限 → 季度上限 の順で二重チェック
-//   - 季度の定義：Q1=1-3月, Q2=4-6月, Q3=7-9月, Q4=10-12月
+// Asia Miles 計分引擎（独立上限対応版）
+//
+// 上限チェック優先順位（全て「より少ない里数」を採用）：
+//   1. 特定分類の月間上限（category_monthly_caps）
+//   2. 特定分類の季度上限（category_quarterly_caps）
+//   3. 海外の月間上限（overseas_monthly_cap）
+//   4. 海外の季度上限（overseas_quarterly_cap）
+//   5. 本地の月間上限（local_monthly_cap）
+//   6. 本地の季度上限（local_quarterly_cap）
+//   7. 旧来の統合上限（monthly_cap_limit / quarterly_cap_limit）← 後方互換
 
 import { supabase } from './supabase';
 import type {
@@ -18,17 +22,14 @@ import type {
 } from '@/types';
 
 // ============================================================
-// ユーティリティ：現在の四半期番号を返す（1〜4）
+// ユーティリティ
 // ============================================================
 export function getCurrentQuarter(): number {
   return Math.ceil((new Date().getMonth() + 1) / 3);
 }
-
 export function getCurrentYear(): number {
   return new Date().getFullYear();
 }
-
-/** 四半期の開始月・終了月を返す（1-indexed） */
 export function getQuarterMonthRange(quarter: number): { start: number; end: number } {
   return { start: (quarter - 1) * 3 + 1, end: quarter * 3 };
 }
@@ -45,130 +46,176 @@ export async function fetchCardRules(forceRefresh = false): Promise<CreditCard[]
   if (!forceRefresh && cardRulesCache && now - cardRulesCachedAt < CACHE_TTL_MS) {
     return cardRulesCache;
   }
-
   const { data, error } = await supabase
     .from('credit_cards')
     .select('*')
     .order('name');
-
   if (error || !data) {
-    console.error('credit_cards テーブルの読み込みに失敗しました：', error?.message);
     if (cardRulesCache) return cardRulesCache;
-    throw new Error('信用卡規則の読み込みに失敗しました。Supabase の接続を確認してください。');
+    throw new Error('信用卡規則の読み込みに失敗しました。');
   }
-
   cardRulesCache = data as CreditCard[];
   cardRulesCachedAt = now;
   return cardRulesCache;
 }
 
-/** キャッシュを強制クリアする（Admin ページで保存後に呼び出す） */
 export function invalidateCardRulesCache(): void {
   cardRulesCache = null;
   cardRulesCachedAt = 0;
 }
 
 // ============================================================
-// 本月各カードの累積消費額を取得
+// 使用量の取得（本地/海外/分類 独立集計）
 // ============================================================
+interface UsageMap {
+  local: number;
+  overseas: number;
+  category: Partial<Record<Category, number>>;
+}
+
+function getMonthStart(): string {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString();
+}
+
+function getQuarterStart(): string {
+  const d = new Date();
+  const qStartMonth = Math.floor(d.getMonth() / 3) * 3;
+  return new Date(d.getFullYear(), qStartMonth, 1).toISOString();
+}
+
+async function buildUsageMap(since: string): Promise<Map<string, UsageMap>> {
+  const { data, error } = await supabase
+    .from('transactions')
+    .select('card_used, amount_hkd, is_overseas, category')
+    .gte('created_at', since);
+
+  const map = new Map<string, UsageMap>();
+  if (error || !data) return map;
+
+  for (const tx of data) {
+    const key = tx.card_used as string;
+    if (!map.has(key)) map.set(key, { local: 0, overseas: 0, category: {} });
+    const u = map.get(key)!;
+    const amt = Number(tx.amount_hkd);
+    if (tx.is_overseas) {
+      u.overseas += amt;
+    } else {
+      u.local += amt;
+    }
+    const cat = tx.category as Category;
+    u.category[cat] = (u.category[cat] ?? 0) + amt;
+  }
+  return map;
+}
+
+// 後方互換：旧来の View ベースの月間/季度合計
 async function getMonthlyUsageMap(): Promise<Map<string, number>> {
   const { data, error } = await supabase
     .from('monthly_card_usage')
     .select('card_used, total_hkd_this_month');
-
-  if (error || !data) {
-    console.error('monthly_card_usage の読み込みに失敗しました：', error?.message);
-    return new Map();
-  }
-
-  const usageMap = new Map<string, number>();
-  (data as MonthlyCardUsage[]).forEach((row) => {
-    usageMap.set(row.card_used, Number(row.total_hkd_this_month));
-  });
-  return usageMap;
+  const m = new Map<string, number>();
+  if (error || !data) return m;
+  (data as MonthlyCardUsage[]).forEach((r) => m.set(r.card_used, Number(r.total_hkd_this_month)));
+  return m;
 }
 
-// ============================================================
-// 本季各カードの累積消費額を取得（quarterly_card_usage View）
-// ============================================================
 async function getQuarterlyUsageMap(): Promise<Map<string, number>> {
-  const currentYear    = getCurrentYear();
-  const currentQuarter = getCurrentQuarter();
-
   const { data, error } = await supabase
     .from('quarterly_card_usage')
     .select('card_used, total_hkd_this_quarter, year, quarter')
-    .eq('year', currentYear)
-    .eq('quarter', currentQuarter);
-
-  if (error || !data) {
-    console.error('quarterly_card_usage の読み込みに失敗しました：', error?.message);
-    return new Map();
-  }
-
-  const usageMap = new Map<string, number>();
-  (data as QuarterlyCardUsage[]).forEach((row) => {
-    usageMap.set(row.card_used, Number(row.total_hkd_this_quarter));
-  });
-  return usageMap;
+    .eq('year', getCurrentYear())
+    .eq('quarter', getCurrentQuarter());
+  const m = new Map<string, number>();
+  if (error || !data) return m;
+  (data as QuarterlyCardUsage[]).forEach((r) => m.set(r.card_used, Number(r.total_hkd_this_quarter)));
+  return m;
 }
 
 // ============================================================
-// 上限チェックのコアロジック（月間・季度共通）
+// 上限チェック共通ロジック
 // ============================================================
-interface CapCheckResult {
+interface BestResult {
   effectiveRate: number;
   isCapped: boolean;
   cappedNote?: string;
-  milesOverride?: number; // 部分超過時に直接里数を返す
+  milesEarned?: number;
+}
+
+interface CapResult {
+  effectiveRate: number;
+  isCapped: boolean;
+  cappedNote?: string;
+  milesOverride?: number;
 }
 
 function applyCapLogic(
   amountHKD: number,
-  currentUsage: number,
+  usedSoFar: number,
   capLimit: number,
-  capRate: number,
-  preferentialRate: number,
-  capLabel: string // 「本月」or「本季」
-): CapCheckResult {
-  const remainingCap = capLimit - currentUsage;
+  cappedRate: number,
+  normalRate: number,
+  periodLabel: string
+): CapResult {
+  const remaining = capLimit - usedSoFar;
 
-  if (remainingCap <= 0) {
-    // 上限を完全に超過
+  if (remaining <= 0) {
     return {
-      effectiveRate: capRate,
+      effectiveRate: cappedRate,
       isCapped: true,
-      cappedNote: `${capLabel}優惠額度已用盡（上限 HKD ${capLimit.toLocaleString()}）`,
+      cappedNote: `${periodLabel}優惠額度已用盡（上限 HKD ${capLimit.toLocaleString()}）`,
+      milesOverride: amountHKD / cappedRate,
     };
   }
 
-  if (remainingCap < amountHKD) {
-    // 部分超過：加重平均
-    const milesInCap   = remainingCap / preferentialRate;
-    const milesOverCap = (amountHKD - remainingCap) / capRate;
-    const totalMiles   = milesInCap + milesOverCap;
-    const weightedRate = amountHKD / totalMiles;
-
-    return {
-      effectiveRate: parseFloat(weightedRate.toFixed(2)),
-      isCapped: true,
-      cappedNote: `部分金額（HKD ${remainingCap.toLocaleString()}）享優惠，超出部分套用基本里數（${capLabel}上限）`,
-      milesOverride: parseFloat(totalMiles.toFixed(2)),
-    };
+  if (amountHKD <= remaining) {
+    return { effectiveRate: normalRate, isCapped: false };
   }
 
-  // 上限内
-  return { effectiveRate: preferentialRate, isCapped: false };
+  // 部分超過 → 加重平均
+  const milesNormal  = remaining / normalRate;
+  const milesCapped  = (amountHKD - remaining) / cappedRate;
+  const totalMiles   = milesNormal + milesCapped;
+  const weightedRate = amountHKD / totalMiles;
+
+  return {
+    effectiveRate: parseFloat(weightedRate.toFixed(4)),
+    isCapped: true,
+    cappedNote: `部分金額（HKD ${remaining.toLocaleString()}）享優惠，超出部分套用基本里數（${periodLabel}上限）`,
+    milesOverride: parseFloat(totalMiles.toFixed(2)),
+  };
+}
+
+/** 現在の最良結果と新しい上限結果を比較し、より厳しい（里数が少ない）方を返す */
+function pickWorseResult(
+  amountHKD: number,
+  current: BestResult,
+  result: CapResult
+): BestResult {
+  if (!result.isCapped) return current;
+  const newMiles = result.milesOverride ?? amountHKD / result.effectiveRate;
+  const curMiles = current.milesEarned  ?? amountHKD / current.effectiveRate;
+  if (newMiles < curMiles) {
+    return {
+      effectiveRate: result.effectiveRate,
+      isCapped: true,
+      cappedNote: result.cappedNote,
+      milesEarned: result.milesOverride,
+    };
+  }
+  return current;
 }
 
 // ============================================================
-// 1 枚のカードに対する里数計算（月間 + 季度 二重上限チェック）
+// 1 枚のカードに対する里数計算
 // ============================================================
 function calculateMilesForCard(
   card: CreditCard,
   input: TransactionInput,
-  currentMonthlyUsage: number,
-  currentQuarterlyUsage: number
+  monthly: UsageMap,
+  quarterly: UsageMap,
+  legacyMonthly: number,
+  legacyQuarterly: number
 ): CardRecommendation {
   const { amountHKD, currency, category } = input;
   const isOverseas = currency !== 'HKD';
@@ -181,13 +228,13 @@ function calculateMilesForCard(
   let minSpendNote: string | undefined;
   let milesEarned: number | undefined;
 
-  // ── ステップ 1：最低消費額チェック ──────────────────────────
+  // ── ステップ 1：最低消費額チェック ──
   if (card.min_spend_hkd !== null && amountHKD < card.min_spend_hkd) {
     isBelowMinSpend = true;
     minSpendNote = `需達 HKD ${card.min_spend_hkd.toLocaleString()} 最低消費`;
   }
 
-  // ── ステップ 2：適用利率を決定（優先順位：分類 > 海外 > 基本）──
+  // ── ステップ 2：適用利率を決定（分類 > 海外 > 基本）──
   const catRate = card.category_rates?.[category as Category];
   if (catRate !== undefined) {
     effectiveRate = catRate;
@@ -195,81 +242,93 @@ function calculateMilesForCard(
     effectiveRate = card.overseas_rate;
     isOverseasBonus = true;
   }
-
-  // 優遇利率（上限チェックに使用）
   const preferentialRate = effectiveRate;
 
-  // ── ステップ 3：月間上限チェック ────────────────────────────
-  if (
-    card.monthly_cap_limit !== null &&
-    card.monthly_cap_rate !== null &&
-    card.monthly_cap_apply_to !== null
-  ) {
-    const isSubjectToMonthly =
+  // 降級後利率（capped_base_rate が設定されていれば使用）
+  const fallbackCappedRate = card.capped_base_rate ?? card.base_rate;
+
+  // 現在の最良結果（上限チェック前）
+  let best: BestResult = { effectiveRate, isCapped: false };
+
+  // ── ステップ 3a：特定分類の月間上限 ──
+  const catMonthlyCap = card.category_monthly_caps?.[category as Category];
+  if (catMonthlyCap != null && catMonthlyCap > 0) {
+    const used = monthly.category[category as Category] ?? 0;
+    const r = applyCapLogic(amountHKD, used, catMonthlyCap, fallbackCappedRate, preferentialRate, '本月分類');
+    best = pickWorseResult(amountHKD, best, r);
+  }
+
+  // ── ステップ 3b：特定分類の季度上限 ──
+  const catQuarterlyCap = card.category_quarterly_caps?.[category as Category];
+  if (catQuarterlyCap != null && catQuarterlyCap > 0) {
+    const used = quarterly.category[category as Category] ?? 0;
+    const r = applyCapLogic(amountHKD, used, catQuarterlyCap, fallbackCappedRate, preferentialRate, '本季分類');
+    best = pickWorseResult(amountHKD, best, r);
+  }
+
+  // ── ステップ 3c：海外の月間上限 ──
+  if (isOverseas && card.overseas_monthly_cap != null && card.overseas_monthly_cap > 0) {
+    const r = applyCapLogic(amountHKD, monthly.overseas, card.overseas_monthly_cap, fallbackCappedRate, preferentialRate, '本月海外');
+    best = pickWorseResult(amountHKD, best, r);
+  }
+
+  // ── ステップ 3d：海外の季度上限 ──
+  if (isOverseas && card.overseas_quarterly_cap != null && card.overseas_quarterly_cap > 0) {
+    const r = applyCapLogic(amountHKD, quarterly.overseas, card.overseas_quarterly_cap, fallbackCappedRate, preferentialRate, '本季海外');
+    best = pickWorseResult(amountHKD, best, r);
+  }
+
+  // ── ステップ 3e：本地の月間上限 ──
+  if (!isOverseas && card.local_monthly_cap != null && card.local_monthly_cap > 0) {
+    const r = applyCapLogic(amountHKD, monthly.local, card.local_monthly_cap, fallbackCappedRate, preferentialRate, '本月本地');
+    best = pickWorseResult(amountHKD, best, r);
+  }
+
+  // ── ステップ 3f：本地の季度上限 ──
+  if (!isOverseas && card.local_quarterly_cap != null && card.local_quarterly_cap > 0) {
+    const r = applyCapLogic(amountHKD, quarterly.local, card.local_quarterly_cap, fallbackCappedRate, preferentialRate, '本季本地');
+    best = pickWorseResult(amountHKD, best, r);
+  }
+
+  // ── ステップ 3g：旧来の月間上限（後方互換）──
+  if (card.monthly_cap_limit !== null && card.monthly_cap_rate !== null && card.monthly_cap_apply_to !== null) {
+    const isSubject =
       card.monthly_cap_apply_to === 'all' ||
       (card.monthly_cap_apply_to === 'overseas' && isOverseas) ||
       (card.monthly_cap_apply_to === 'category' && catRate !== undefined);
-
-    if (isSubjectToMonthly) {
-      const result = applyCapLogic(
-        amountHKD,
-        currentMonthlyUsage,
-        card.monthly_cap_limit,
-        card.monthly_cap_rate,
-        preferentialRate,
-        '本月'
-      );
-      effectiveRate = result.effectiveRate;
-      isCapped      = result.isCapped;
-      cappedNote    = result.cappedNote;
-      if (result.milesOverride !== undefined) {
-        milesEarned = result.milesOverride;
-      }
+    if (isSubject) {
+      const usedForCap =
+        card.monthly_cap_apply_to === 'all' ? legacyMonthly :
+        card.monthly_cap_apply_to === 'overseas' ? monthly.overseas :
+        (monthly.category[category as Category] ?? 0);
+      const r = applyCapLogic(amountHKD, usedForCap, card.monthly_cap_limit, card.monthly_cap_rate, preferentialRate, '本月');
+      best = pickWorseResult(amountHKD, best, r);
     }
   }
 
-  // ── ステップ 4：季度上限チェック（月間上限より厳しい場合のみ適用）──
-  if (
-    card.quarterly_cap_limit !== null &&
-    card.quarterly_cap_rate !== null &&
-    card.quarterly_cap_apply_to !== null
-  ) {
-    const isSubjectToQuarterly =
+  // ── ステップ 3h：旧来の季度上限（後方互換）──
+  if (card.quarterly_cap_limit !== null && card.quarterly_cap_rate !== null && card.quarterly_cap_apply_to !== null) {
+    const isSubject =
       card.quarterly_cap_apply_to === 'all' ||
       (card.quarterly_cap_apply_to === 'overseas' && isOverseas) ||
       (card.quarterly_cap_apply_to === 'category' && catRate !== undefined);
-
-    if (isSubjectToQuarterly) {
-      const result = applyCapLogic(
-        amountHKD,
-        currentQuarterlyUsage,
-        card.quarterly_cap_limit,
-        card.quarterly_cap_rate,
-        preferentialRate,
-        '本季'
-      );
-
-      // 季度上限の方が厳しい（里数が少ない）場合のみ上書き
-      const quarterlyMiles =
-        result.milesOverride !== undefined
-          ? result.milesOverride
-          : amountHKD / result.effectiveRate;
-
-      const currentMiles =
-        milesEarned !== undefined ? milesEarned : amountHKD / effectiveRate;
-
-      if (result.isCapped && quarterlyMiles < currentMiles) {
-        effectiveRate = result.effectiveRate;
-        isCapped      = true;
-        cappedNote    = result.cappedNote;
-        milesEarned   = result.milesOverride;
-      }
+    if (isSubject) {
+      const usedForCap =
+        card.quarterly_cap_apply_to === 'all' ? legacyQuarterly :
+        card.quarterly_cap_apply_to === 'overseas' ? quarterly.overseas :
+        (quarterly.category[category as Category] ?? 0);
+      const r = applyCapLogic(amountHKD, usedForCap, card.quarterly_cap_limit, card.quarterly_cap_rate, preferentialRate, '本季');
+      best = pickWorseResult(amountHKD, best, r);
     }
   }
 
-  // ── ステップ 5：最終里数を計算 ──────────────────────────────
-  const finalMiles =
-    milesEarned !== undefined ? milesEarned : amountHKD / effectiveRate;
+  // ── ステップ 4：最終里数を計算 ──
+  effectiveRate = best.effectiveRate;
+  isCapped      = best.isCapped;
+  cappedNote    = best.cappedNote;
+  milesEarned   = best.milesEarned;
+
+  const finalMiles = milesEarned !== undefined ? milesEarned : amountHKD / effectiveRate;
 
   return {
     cardId: card.id,
@@ -286,25 +345,27 @@ function calculateMilesForCard(
 }
 
 // ============================================================
-// 公開 API：推薦信用卡ランキング（DB から規則を読み込む）
+// 公開 API：推薦信用卡ランキング
 // ============================================================
 export async function recommendCards(
   input: TransactionInput
 ): Promise<CardRecommendation[]> {
-  // 並列で取得してレイテンシを最小化
-  const [cards, monthlyUsageMap, quarterlyUsageMap] = await Promise.all([
+  const [cards, monthlyDetailed, quarterlyDetailed, legacyMonthly, legacyQuarterly] = await Promise.all([
     fetchCardRules(),
+    buildUsageMap(getMonthStart()),
+    buildUsageMap(getQuarterStart()),
     getMonthlyUsageMap(),
     getQuarterlyUsageMap(),
   ]);
 
   const recommendations = cards.map((card) => {
-    const monthlyUsage   = monthlyUsageMap.get(card.name) ?? 0;
-    const quarterlyUsage = quarterlyUsageMap.get(card.name) ?? 0;
-    return calculateMilesForCard(card, input, monthlyUsage, quarterlyUsage);
+    const monthly   = monthlyDetailed.get(card.name)   ?? { local: 0, overseas: 0, category: {} };
+    const quarterly = quarterlyDetailed.get(card.name) ?? { local: 0, overseas: 0, category: {} };
+    const lm = legacyMonthly.get(card.name)   ?? 0;
+    const lq = legacyQuarterly.get(card.name) ?? 0;
+    return calculateMilesForCard(card, input, monthly, quarterly, lm, lq);
   });
 
-  // 里数の多い順にソート。同点の場合は上限未達を優先
   return recommendations.sort((a, b) => {
     const diff = b.milesEarned - a.milesEarned;
     if (Math.abs(diff) > 0.01) return diff;

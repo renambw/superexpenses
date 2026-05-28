@@ -20,6 +20,9 @@ const CATEGORIES: { label: Category; emoji: string }[] = [
 
 const CURRENCIES = ['HKD', 'JPY', 'USD', 'EUR', 'GBP', 'CNY', 'TWD', 'AUD', 'SGD'];
 
+// 現金支払いを表す特別な定数
+const CASH_CARD_NAME = '現金';
+
 // ── スタイル定数 ──────────────────────────────────────────────
 const CARD_BASE =
   'w-full p-4 rounded-3xl border text-left transition-all duration-200 active:scale-[0.97]';
@@ -29,6 +32,7 @@ export default function HomePage() {
   const [currency, setCurrency]       = useState('HKD');
   const [category, setCategory]       = useState<Category>('飲食');
   const [description, setDescription] = useState('');
+  const [useCash, setUseCash]         = useState(false);
 
   const [hkdAmount, setHkdAmount]       = useState<number>(0);
   const [exchangeRate, setExchangeRate] = useState<number>(1);
@@ -59,9 +63,11 @@ export default function HomePage() {
     return () => clearTimeout(t);
   }, [amount, currency]);
 
-  // HKD・分類変更時に推薦を計算
+  // HKD・分類・現金モード変更時に推薦を計算
   useEffect(() => {
     if (hkdAmount <= 0) { setRecommendations([]); return; }
+    // 現金モードの場合は推薦不要
+    if (useCash) { setRecommendations([]); return; }
     const run = async () => {
       setRecLoading(true);
       try {
@@ -75,9 +81,34 @@ export default function HomePage() {
     };
     run();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hkdAmount, category]);
+  }, [hkdAmount, category, useCash]);
 
-  // Supabase に保存
+  // 現金で保存
+  const handleSaveCash = useCallback(async () => {
+    if (saving || hkdAmount <= 0) return;
+    setSaving(true); setError(null);
+    const { error: dbErr } = await supabase.from('transactions').insert([{
+      amount_original: parseFloat(amount), currency,
+      exchange_rate: exchangeRate, amount_hkd: hkdAmount,
+      category, card_used: CASH_CARD_NAME,
+      miles_earned: 0,
+      is_overseas: currency !== 'HKD',
+      description: description || null,
+    }]);
+    setSaving(false);
+    if (dbErr) {
+      setError('儲存失敗：' + dbErr.message);
+    } else {
+      setSavedCard(CASH_CARD_NAME);
+      setTimeout(() => {
+        setAmount(''); setDescription('');
+        setSavedCard(null); setRecommendations([]); setHkdAmount(0);
+        setUseCash(false);
+      }, 2000);
+    }
+  }, [amount, currency, exchangeRate, hkdAmount, category, description, saving]);
+
+  // 信用卡で保存
   const handleSave = useCallback(async (rec: CardRecommendation) => {
     if (saving) return;
     setSaving(true); setError(null);
@@ -210,6 +241,41 @@ export default function HomePage() {
             </div>
           </div>
 
+          {/* 支払い方法：現金トグル */}
+          <div>
+            <label className="block text-[10px] tracking-widest uppercase mb-3" style={{ color: '#A8948A' }}>
+              支付方式
+            </label>
+            <div className="flex gap-2">
+              {/* 信用卡ボタン */}
+              <button
+                onClick={() => setUseCash(false)}
+                className="flex-1 py-2.5 rounded-2xl text-sm font-medium transition-all active:scale-95"
+                style={{
+                  background: !useCash ? '#C4A482' : '#EFE9E1',
+                  color: !useCash ? '#FFFDF9' : '#9A7350',
+                  boxShadow: !useCash ? '0 2px 8px rgba(196,164,130,0.35)' : 'none',
+                  border: !useCash ? '1.5px solid transparent' : '1.5px solid #E0D4C6',
+                }}
+              >
+                💳 信用卡
+              </button>
+              {/* 現金ボタン */}
+              <button
+                onClick={() => setUseCash(true)}
+                className="flex-1 py-2.5 rounded-2xl text-sm font-medium transition-all active:scale-95"
+                style={{
+                  background: useCash ? '#9A7350' : '#EFE9E1',
+                  color: useCash ? '#FFFDF9' : '#9A7350',
+                  boxShadow: useCash ? '0 2px 8px rgba(154,115,80,0.35)' : 'none',
+                  border: useCash ? '1.5px solid transparent' : '1.5px solid #E0D4C6',
+                }}
+              >
+                💵 現金
+              </button>
+            </div>
+          </div>
+
           {/* 備注 */}
           <div>
             <label className="block text-[10px] tracking-widest uppercase mb-2" style={{ color: '#A8948A' }}>
@@ -241,11 +307,66 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* ── 推薦リスト ── */}
-        {(recLoading || recommendations.length > 0) && (
+        {/* ── 現金モード：直接記録ボタン ── */}
+        {useCash && hkdAmount > 0 && (
+          <section className="animate-fade-in-up">
+            <h2 className="text-[10px] tracking-widest uppercase px-1 mb-3" style={{ color: '#A8948A' }}>
+              💵 現金支付
+            </h2>
+            <button
+              onClick={handleSaveCash}
+              disabled={saving || !!savedCard}
+              className={`${CARD_BASE} disabled:cursor-default`}
+              style={
+                savedCard === CASH_CARD_NAME
+                  ? { background: '#F0F7F2', border: '1.5px solid #7DAB8A', boxShadow: 'none' }
+                  : {
+                      background: 'linear-gradient(135deg, #7A6A5A 0%, #9A8A7A 100%)',
+                      border: '1.5px solid transparent',
+                      boxShadow: '0 6px 20px rgba(122,106,90,0.30)',
+                    }
+              }
+            >
+              <div className="flex justify-between items-center">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-sm" style={{ color: savedCard === CASH_CARD_NAME ? '#7DAB8A' : '#FFFDF9' }}>
+                      💵 現金
+                    </span>
+                    <span
+                      className="text-[9px] px-2 py-0.5 rounded-full font-bold"
+                      style={{ background: 'rgba(255,253,249,0.20)', color: '#FFFDF9' }}
+                    >
+                      不賺里數
+                    </span>
+                  </div>
+                  <p className="text-xs" style={{ color: 'rgba(255,253,249,0.70)' }}>
+                    HKD {hkdAmount.toFixed(2)} · 里數 0
+                  </p>
+                </div>
+                <div className="text-right">
+                  {savedCard === CASH_CARD_NAME ? (
+                    <span className="font-semibold text-sm" style={{ color: '#7DAB8A' }}>已記錄 ✓</span>
+                  ) : (
+                    <>
+                      <p className="text-2xl font-light" style={{ color: '#FFFDF9' }}>0</p>
+                      <p className="text-[10px]" style={{ color: 'rgba(255,253,249,0.65)' }}>Asia Miles</p>
+                    </>
+                  )}
+                </div>
+              </div>
+            </button>
+            <p className="text-[10px] text-center pt-2" style={{ color: '#CDB99F' }}>
+              點擊記錄現金消費（里數為 0）🌸
+            </p>
+          </section>
+        )}
+
+        {/* ── 信用卡推薦リスト ── */}
+        {!useCash && (recLoading || recommendations.length > 0) && (
           <section className="space-y-3 animate-fade-in-up">
             <h2 className="text-[10px] tracking-widest uppercase px-1" style={{ color: '#A8948A' }}>
-              🌸 最佳支付方式
+              🌸 最佳信用卡推薦
             </h2>
 
             {recLoading ? (

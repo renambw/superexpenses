@@ -12,11 +12,10 @@ export type Category =
   | '雜項';
 
 // CardName は DB の name カラムに合わせて string に拡張
-// （Admin ページで新しいカードを追加できるようにするため）
 export type CardName = string;
 
 // ============================================================
-// Supabase credit_cards テーブルの型定義
+// Supabase credit_cards テーブルの型定義（独立上限対応版）
 // ============================================================
 export type MonthlyCapApplyTo   = 'all' | 'overseas' | 'category';
 export type QuarterlyCapApplyTo = 'all' | 'overseas' | 'category';
@@ -29,15 +28,26 @@ export interface CreditCard {
   category_rates: Partial<Record<Category, number>>;
   min_spend_hkd: number | null;
 
-  // ── 每月上限 ──
+  // ── 旧来の上限フィールド（後方互換性のために保持） ──
   monthly_cap_limit:    number | null;
   monthly_cap_rate:     number | null;
   monthly_cap_apply_to: MonthlyCapApplyTo | null;
-
-  // ── 每季上限（新規追加） ──
   quarterly_cap_limit:    number | null;
   quarterly_cap_rate:     number | null;
   quarterly_cap_apply_to: QuarterlyCapApplyTo | null;
+
+  // ── 独立上限フィールド（新規追加） ──
+  // 本地（HKD）上限
+  local_monthly_cap:   number | null;
+  local_quarterly_cap: number | null;
+  // 海外（外幣）上限
+  overseas_monthly_cap:   number | null;
+  overseas_quarterly_cap: number | null;
+  // 特定分類上限（JSONB: {"飲食": 10000, "交通": 5000}）
+  category_monthly_caps:   Partial<Record<Category, number>> | null;
+  category_quarterly_caps: Partial<Record<Category, number>> | null;
+  // 上限超過後の降級利率（全上限共通）
+  capped_base_rate: number | null;
 }
 
 // ============================================================
@@ -93,4 +103,12 @@ export interface QuarterlyCardUsage {
   total_hkd_this_quarter: number;
   total_miles_this_quarter: number;
   transaction_count: number;
+}
+
+// ── 独立上限用の詳細 Usage 型 ──
+export interface DetailedUsage {
+  card_used: CardName;
+  local_hkd: number;
+  overseas_hkd: number;
+  category_hkd: Partial<Record<Category, number>>;
 }

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { invalidateCardRulesCache, getCurrentQuarter } from '@/lib/milesEngine';
-import type { CreditCard, Category, MonthlyCapApplyTo, QuarterlyCapApplyTo } from '@/types';
+import type { CreditCard, Category } from '@/types';
 
 // ============================================================
 // 定数
@@ -17,17 +17,8 @@ const CATEGORY_EMOJI: Record<Category, string> = {
   '娛樂': '🎬', '通訊': '📱', '手信/禮物': '🎁', '醫療/保險': '💊', '雜項': '📋',
 };
 
-const CAP_APPLY_TO_OPTIONS: { value: MonthlyCapApplyTo; label: string }[] = [
-  { value: 'all',      label: '全部簽賬' },
-  { value: 'overseas', label: '海外簽賬' },
-  { value: 'category', label: '特定分類' },
-];
-
 const QUARTER_LABELS: Record<number, string> = {
-  1: 'Q1（1–3月）',
-  2: 'Q2（4–6月）',
-  3: 'Q3（7–9月）',
-  4: 'Q4（10–12月）',
+  1: 'Q1（1–3月）', 2: 'Q2（4–6月）', 3: 'Q3（7–9月）', 4: 'Q4（10–12月）',
 };
 
 const EMPTY_FORM: Omit<CreditCard, 'id'> = {
@@ -36,20 +27,30 @@ const EMPTY_FORM: Omit<CreditCard, 'id'> = {
   overseas_rate: null,
   category_rates: {},
   min_spend_hkd: null,
+  // 旧来フィールド（後方互換）
   monthly_cap_limit: null,
   monthly_cap_rate: null,
   monthly_cap_apply_to: null,
   quarterly_cap_limit: null,
   quarterly_cap_rate: null,
   quarterly_cap_apply_to: null,
+  // 独立上限フィールド
+  local_monthly_cap: null,
+  local_quarterly_cap: null,
+  overseas_monthly_cap: null,
+  overseas_quarterly_cap: null,
+  category_monthly_caps: null,
+  category_quarterly_caps: null,
+  capped_base_rate: null,
 };
 
 // ============================================================
-// トグルスイッチ（共通）
+// 共通 UI コンポーネント
 // ============================================================
-function Toggle({
-  checked, onChange, label,
-}: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+
+function Toggle({ checked, onChange, label }: {
+  checked: boolean; onChange: (v: boolean) => void; label: string;
+}) {
   return (
     <label className="flex items-center gap-2 cursor-pointer select-none mb-2">
       <div
@@ -71,54 +72,51 @@ function Toggle({
   );
 }
 
-// ============================================================
-// 数値入力フィールド（共通）
-// ============================================================
-function NumberField({
-  label, value, onChange, unit = 'HKD / 里', min = 0.1, hint,
-}: {
-  label: string;
-  value: number | null;
-  onChange: (v: number) => void;
-  unit?: string;
-  min?: number;
-  hint?: string;
+function NumberField({ label, value, onChange, unit = 'HKD', min = 0.1, hint, placeholder }: {
+  label: string; value: number | null; onChange: (v: number | null) => void;
+  unit?: string; min?: number; hint?: string; placeholder?: string;
 }) {
   return (
     <div>
-      <label className="field-label">{label}</label>
+      <label className="block text-[10px] tracking-widest uppercase mb-1" style={{ color: '#A8948A' }}>
+        {label}
+      </label>
       <div className="flex items-center gap-2">
         <input
           type="number" inputMode="decimal" step="any"
           value={value ?? ''} min={min}
+          placeholder={placeholder ?? ''}
           onChange={(e) => {
             const v = parseFloat(e.target.value);
-            if (!isNaN(v) && v > 0) onChange(v);
+            onChange(isNaN(v) || v <= 0 ? null : v);
           }}
-          className="field-input w-32"
+          className="w-32 text-sm outline-none pb-0.5 bg-transparent"
+          style={{
+            color: '#5C4A43',
+            borderBottom: '1.5px solid #E0D4C6',
+            caretColor: '#C4A482',
+          }}
           onFocus={(e) => (e.target.style.borderBottomColor = '#C4A482')}
           onBlur={(e) => (e.target.style.borderBottomColor = '#E0D4C6')}
         />
-        <span className="text-sm" style={{ color: '#A8948A' }}>{unit}</span>
+        <span className="text-xs" style={{ color: '#A8948A' }}>{unit}</span>
       </div>
-      {hint && <p className="text-xs mt-1" style={{ color: '#CDB99F' }}>{hint}</p>}
+      {hint && <p className="text-[10px] mt-1" style={{ color: '#CDB99F' }}>{hint}</p>}
     </div>
   );
 }
 
 // ============================================================
-// カテゴリ利率エディタ
+// 分類別利率エディタ
 // ============================================================
-function CategoryRatesEditor({
-  value, onChange,
-}: {
+function CategoryRatesEditor({ value, onChange }: {
   value: Partial<Record<Category, number>>;
   onChange: (v: Partial<Record<Category, number>>) => void;
 }) {
   return (
     <div className="space-y-2.5">
       {ALL_CATEGORIES.map((cat) => {
-        const rate    = value[cat];
+        const rate = value[cat];
         const enabled = rate !== undefined;
         return (
           <div key={cat} className="flex items-center gap-3">
@@ -147,9 +145,8 @@ function CategoryRatesEditor({
                     const v = parseFloat(e.target.value);
                     if (!isNaN(v) && v > 0) onChange({ ...value, [cat]: v });
                   }}
-                  className="w-20 text-sm text-center outline-none pb-0.5"
+                  className="w-20 text-sm text-center outline-none pb-0.5 bg-transparent"
                   style={{
-                    background: 'transparent',
                     borderBottom: '1.5px solid #E0D4C6',
                     color: '#5C4A43',
                     caretColor: '#C4A482',
@@ -168,72 +165,100 @@ function CategoryRatesEditor({
 }
 
 // ============================================================
-// 上限設定セクション（月間・季度共通コンポーネント）
+// 分類別上限エディタ（月間 or 季度）
 // ============================================================
-function CapSection({
-  label,
-  emoji,
-  hint,
-  enabled,
-  onToggle,
-  capLimit,
-  onCapLimit,
-  capRate,
-  onCapRate,
-  applyTo,
-  onApplyTo,
-}: {
+function CategoryCapsEditor({ label, value, onChange }: {
   label: string;
-  emoji: string;
-  hint: string;
-  enabled: boolean;
-  onToggle: (v: boolean) => void;
-  capLimit: number | null;
-  onCapLimit: (v: number) => void;
-  capRate: number | null;
-  onCapRate: (v: number) => void;
-  applyTo: MonthlyCapApplyTo | QuarterlyCapApplyTo | null;
-  onApplyTo: (v: MonthlyCapApplyTo) => void;
+  value: Partial<Record<Category, number>> | null;
+  onChange: (v: Partial<Record<Category, number>> | null) => void;
 }) {
+  const caps = value ?? {};
   return (
-    <div>
-      <Toggle checked={enabled} label={`${emoji} ${label}`} onChange={onToggle} />
-      {enabled && (
-        <div
-          className="pl-4 ml-7 space-y-4 border-l-2 mt-1"
-          style={{ borderColor: '#E0D4C6' }}
-        >
-          <NumberField
-            label={`${label}（HKD）`}
-            value={capLimit}
-            onChange={onCapLimit}
-            unit="HKD 累積簽賬後降級"
-            min={1}
-            hint={hint}
-          />
-          <NumberField
-            label="超出上限後的利率（HKD / 里）"
-            value={capRate}
-            onChange={onCapRate}
-          />
-          <div>
-            <label className="field-label">上限適用範圍</label>
-            <div className="flex gap-3 mt-2 flex-wrap">
-              {CAP_APPLY_TO_OPTIONS.map(({ value, label: optLabel }) => (
-                <label key={value} className="flex items-center gap-1.5 cursor-pointer">
-                  <input
-                    type="radio"
-                    name={`cap_apply_to_${label}`}
-                    value={value}
-                    checked={applyTo === value}
-                    onChange={() => onApplyTo(value)}
-                    style={{ accentColor: '#C4A482' }}
-                  />
-                  <span className="text-sm" style={{ color: '#5C4A43' }}>{optLabel}</span>
-                </label>
-              ))}
-            </div>
+    <div className="space-y-2.5">
+      <p className="text-[10px] tracking-widest uppercase" style={{ color: '#A8948A' }}>
+        {label}（各分類獨立上限 HKD）
+      </p>
+      {ALL_CATEGORIES.map((cat) => {
+        const capVal = caps[cat];
+        const enabled = capVal !== undefined;
+        return (
+          <div key={cat} className="flex items-center gap-3">
+            <label className="flex items-center gap-2 w-32 cursor-pointer select-none">
+              <input
+                type="checkbox" checked={enabled}
+                onChange={(e) => {
+                  const next = { ...caps };
+                  if (e.target.checked) { next[cat] = 10000; } else { delete next[cat]; }
+                  onChange(Object.keys(next).length > 0 ? next : null);
+                }}
+                className="w-3.5 h-3.5 rounded"
+                style={{ accentColor: '#C4A482' }}
+              />
+              <span className="text-sm" style={{ color: '#5C4A43' }}>
+                {CATEGORY_EMOJI[cat]} {cat}
+              </span>
+            </label>
+            {enabled && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs" style={{ color: '#A8948A' }}>HKD</span>
+                <input
+                  type="number" inputMode="decimal" step="any"
+                  value={capVal} min={1}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    if (!isNaN(v) && v > 0) {
+                      const next = { ...caps, [cat]: v };
+                      onChange(next);
+                    }
+                  }}
+                  className="w-24 text-sm text-center outline-none pb-0.5 bg-transparent"
+                  style={{
+                    borderBottom: '1.5px solid #E0D4C6',
+                    color: '#5C4A43',
+                    caretColor: '#C4A482',
+                  }}
+                  onFocus={(e) => (e.target.style.borderBottomColor = '#C4A482')}
+                  onBlur={(e) => (e.target.style.borderBottomColor = '#E0D4C6')}
+                />
+                <span className="text-xs" style={{ color: '#A8948A' }}>上限</span>
+              </div>
+            )}
           </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ============================================================
+// セクションカード（折りたたみ可能）
+// ============================================================
+function SectionCard({ title, emoji, color, children, defaultOpen = false }: {
+  title: string; emoji: string; color: string;
+  children: React.ReactNode; defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="rounded-2xl overflow-hidden" style={{ border: `1px solid ${color}20` }}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-4 py-3 text-left transition-colors"
+        style={{ background: `${color}10` }}
+      >
+        <span className="text-sm font-semibold" style={{ color }}>
+          {emoji} {title}
+        </span>
+        <span className="text-xs transition-transform" style={{
+          color, transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+          display: 'inline-block',
+        }}>
+          ▼
+        </span>
+      </button>
+      {open && (
+        <div className="px-4 py-4 space-y-4" style={{ background: '#FFFDF9' }}>
+          {children}
         </div>
       )}
     </div>
@@ -241,21 +266,28 @@ function CapSection({
 }
 
 // ============================================================
-// カード編集フォーム
+// カード編集フォーム（全フィールド対応）
 // ============================================================
-function CardForm({
-  initial, onSave, onCancel, isSaving,
-}: {
+function CardForm({ initial, onSave, onCancel, isSaving }: {
   initial: Omit<CreditCard, 'id'> & { id?: string };
   onSave: (data: Omit<CreditCard, 'id'> & { id?: string }) => Promise<void>;
   onCancel: () => void;
   isSaving: boolean;
 }) {
   const [form, setForm] = useState(initial);
-  const [hasOverseasRate,     setHasOverseasRate]     = useState(initial.overseas_rate !== null);
-  const [hasMinSpend,         setHasMinSpend]         = useState(initial.min_spend_hkd !== null);
-  const [hasMonthlyCapLimit,  setHasMonthlyCapLimit]  = useState(initial.monthly_cap_limit !== null);
-  const [hasQuarterlyCapLimit, setHasQuarterlyCapLimit] = useState(initial.quarterly_cap_limit !== null);
+  const [hasOverseasRate,       setHasOverseasRate]       = useState(initial.overseas_rate !== null);
+  const [hasMinSpend,           setHasMinSpend]           = useState(initial.min_spend_hkd !== null);
+  const [hasCappedRate,         setHasCappedRate]         = useState(initial.capped_base_rate !== null);
+  const [hasLocalMonthly,       setHasLocalMonthly]       = useState(initial.local_monthly_cap !== null);
+  const [hasLocalQuarterly,     setHasLocalQuarterly]     = useState(initial.local_quarterly_cap !== null);
+  const [hasOverseasMonthly,    setHasOverseasMonthly]    = useState(initial.overseas_monthly_cap !== null);
+  const [hasOverseasQuarterly,  setHasOverseasQuarterly]  = useState(initial.overseas_quarterly_cap !== null);
+  const [hasCatMonthly,         setHasCatMonthly]         = useState(
+    initial.category_monthly_caps !== null && Object.keys(initial.category_monthly_caps ?? {}).length > 0
+  );
+  const [hasCatQuarterly,       setHasCatQuarterly]       = useState(
+    initial.category_quarterly_caps !== null && Object.keys(initial.category_quarterly_caps ?? {}).length > 0
+  );
 
   const set = <K extends keyof typeof form>(key: K, val: (typeof form)[K]) =>
     setForm((prev) => ({ ...prev, [key]: val }));
@@ -266,140 +298,255 @@ function CardForm({
       ...form,
       overseas_rate:           hasOverseasRate ? form.overseas_rate : null,
       min_spend_hkd:           hasMinSpend ? form.min_spend_hkd : null,
-      monthly_cap_limit:       hasMonthlyCapLimit ? form.monthly_cap_limit : null,
-      monthly_cap_rate:        hasMonthlyCapLimit ? form.monthly_cap_rate : null,
-      monthly_cap_apply_to:    hasMonthlyCapLimit ? form.monthly_cap_apply_to : null,
-      quarterly_cap_limit:     hasQuarterlyCapLimit ? form.quarterly_cap_limit : null,
-      quarterly_cap_rate:      hasQuarterlyCapLimit ? form.quarterly_cap_rate : null,
-      quarterly_cap_apply_to:  hasQuarterlyCapLimit ? form.quarterly_cap_apply_to : null,
+      capped_base_rate:        hasCappedRate ? form.capped_base_rate : null,
+      local_monthly_cap:       hasLocalMonthly ? form.local_monthly_cap : null,
+      local_quarterly_cap:     hasLocalQuarterly ? form.local_quarterly_cap : null,
+      overseas_monthly_cap:    hasOverseasMonthly ? form.overseas_monthly_cap : null,
+      overseas_quarterly_cap:  hasOverseasQuarterly ? form.overseas_quarterly_cap : null,
+      category_monthly_caps:   hasCatMonthly ? form.category_monthly_caps : null,
+      category_quarterly_caps: hasCatQuarterly ? form.category_quarterly_caps : null,
+      // 旧来フィールドはクリア（独立上限に移行）
+      monthly_cap_limit: null, monthly_cap_rate: null, monthly_cap_apply_to: null,
+      quarterly_cap_limit: null, quarterly_cap_rate: null, quarterly_cap_apply_to: null,
     });
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6">
+    <form onSubmit={handleSubmit} className="space-y-5">
 
-      {/* カード名 */}
-      <div>
-        <label className="field-label">信用卡名稱</label>
-        <input
-          required type="text" value={form.name}
-          onChange={(e) => set('name', e.target.value)}
-          placeholder="例：渣打 Cathay 卡"
-          className="field-input"
-          onFocus={(e) => (e.target.style.borderBottomColor = '#C4A482')}
-          onBlur={(e) => (e.target.style.borderBottomColor = '#E0D4C6')}
-        />
-      </div>
-
-      {/* 基本利率 */}
-      <NumberField
-        label="基本里數（HKD / 里）"
-        value={form.base_rate}
-        onChange={(v) => set('base_rate', v)}
-        hint="每消費此金額可賺取 1 里"
-      />
-
-      {/* 海外利率 */}
-      <div>
-        <Toggle
-          checked={hasOverseasRate} label="設定海外簽賬利率"
-          onChange={(v) => {
-            setHasOverseasRate(v);
-            if (v && form.overseas_rate === null) set('overseas_rate', form.base_rate);
-          }}
-        />
-        {hasOverseasRate && (
-          <div className="pl-11">
-            <NumberField
-              label="海外利率（HKD / 里）"
-              value={form.overseas_rate}
-              onChange={(v) => set('overseas_rate', v)}
-            />
-          </div>
-        )}
-      </div>
-
-      {/* 最低消費 */}
-      <div>
-        <Toggle
-          checked={hasMinSpend} label="設定最低消費額"
-          onChange={(v) => {
-            setHasMinSpend(v);
-            if (v && form.min_spend_hkd === null) set('min_spend_hkd', 5000);
-          }}
-        />
-        {hasMinSpend && (
-          <div className="pl-11">
-            <NumberField
-              label="最低消費額（HKD）"
-              value={form.min_spend_hkd}
-              onChange={(v) => set('min_spend_hkd', v)}
-              unit="HKD 以上才享優惠"
-              min={1}
-            />
-          </div>
-        )}
-      </div>
-
-      {/* 分類別利率 */}
-      <div>
-        <label className="field-label">分類特別利率（選填）</label>
-        <div
-          className="rounded-2xl p-4 mt-1"
-          style={{ background: '#FAF7F3', border: '1px solid #EFE9E1' }}
-        >
-          <CategoryRatesEditor
-            value={form.category_rates}
-            onChange={(v) => set('category_rates', v)}
+      {/* ── 基本情報 ── */}
+      <SectionCard title="基本資料" emoji="💳" color="#9A7350" defaultOpen>
+        <div>
+          <label className="block text-[10px] tracking-widest uppercase mb-1" style={{ color: '#A8948A' }}>
+            信用卡名稱
+          </label>
+          <input
+            required type="text" value={form.name}
+            onChange={(e) => set('name', e.target.value)}
+            placeholder="例：渣打 Cathay 卡"
+            className="w-full text-sm outline-none pb-1 bg-transparent"
+            style={{ color: '#5C4A43', borderBottom: '1.5px solid #E0D4C6', caretColor: '#C4A482' }}
+            onFocus={(e) => (e.target.style.borderBottomColor = '#C4A482')}
+            onBlur={(e) => (e.target.style.borderBottomColor = '#E0D4C6')}
           />
         </div>
-      </div>
+        <NumberField
+          label="基本里數（HKD / 里）"
+          value={form.base_rate}
+          onChange={(v) => set('base_rate', v ?? 6)}
+          unit="HKD / 里"
+          hint="每消費此金額可賺取 1 里"
+        />
+        <div>
+          <Toggle
+            checked={hasOverseasRate} label="設定海外簽賬利率"
+            onChange={(v) => {
+              setHasOverseasRate(v);
+              if (v && form.overseas_rate === null) set('overseas_rate', form.base_rate);
+            }}
+          />
+          {hasOverseasRate && (
+            <div className="pl-11 mt-1">
+              <NumberField
+                label="海外利率（HKD / 里）"
+                value={form.overseas_rate}
+                onChange={(v) => set('overseas_rate', v)}
+                unit="HKD / 里"
+              />
+            </div>
+          )}
+        </div>
+        <div>
+          <Toggle
+            checked={hasMinSpend} label="設定最低消費額"
+            onChange={(v) => {
+              setHasMinSpend(v);
+              if (v && form.min_spend_hkd === null) set('min_spend_hkd', 5000);
+            }}
+          />
+          {hasMinSpend && (
+            <div className="pl-11 mt-1">
+              <NumberField
+                label="最低消費額（HKD）"
+                value={form.min_spend_hkd}
+                onChange={(v) => set('min_spend_hkd', v)}
+                unit="HKD 以上才享優惠"
+                min={1}
+              />
+            </div>
+          )}
+        </div>
+        <div>
+          <Toggle
+            checked={hasCappedRate} label="設定超限後降級利率"
+            onChange={(v) => {
+              setHasCappedRate(v);
+              if (v && form.capped_base_rate === null) set('capped_base_rate', form.base_rate);
+            }}
+          />
+          {hasCappedRate && (
+            <div className="pl-11 mt-1">
+              <NumberField
+                label="超限後降級利率（HKD / 里）"
+                value={form.capped_base_rate}
+                onChange={(v) => set('capped_base_rate', v)}
+                unit="HKD / 里"
+                hint="超過任何上限後套用此利率（預設使用基本利率）"
+              />
+            </div>
+          )}
+        </div>
+      </SectionCard>
 
-      {/* 月間上限 */}
-      <CapSection
-        label="每月回贈上限"
-        emoji="📅"
-        hint="例：渣打 Cathay 卡每月 HKD 25,000 享優惠利率"
-        enabled={hasMonthlyCapLimit}
-        onToggle={(v) => {
-          setHasMonthlyCapLimit(v);
-          if (v) {
-            if (form.monthly_cap_limit === null)    set('monthly_cap_limit', 25000);
-            if (form.monthly_cap_rate === null)     set('monthly_cap_rate', form.base_rate);
-            if (form.monthly_cap_apply_to === null) set('monthly_cap_apply_to', 'all');
-          }
-        }}
-        capLimit={form.monthly_cap_limit}
-        onCapLimit={(v) => set('monthly_cap_limit', v)}
-        capRate={form.monthly_cap_rate}
-        onCapRate={(v) => set('monthly_cap_rate', v)}
-        applyTo={form.monthly_cap_apply_to}
-        onApplyTo={(v) => set('monthly_cap_apply_to', v)}
-      />
+      {/* ── 分類特別利率 ── */}
+      <SectionCard title="分類特別利率" emoji="🏷" color="#7D8FAB">
+        <CategoryRatesEditor
+          value={form.category_rates}
+          onChange={(v) => set('category_rates', v)}
+        />
+      </SectionCard>
 
-      {/* 季度上限（新機能） */}
-      <CapSection
-        label="每季回贈上限"
-        emoji="🗓"
-        hint="例：AE Explorer 每季 HKD 75,000 享優惠利率（Q1=1-3月，Q2=4-6月…）"
-        enabled={hasQuarterlyCapLimit}
-        onToggle={(v) => {
-          setHasQuarterlyCapLimit(v);
-          if (v) {
-            if (form.quarterly_cap_limit === null)    set('quarterly_cap_limit', 75000);
-            if (form.quarterly_cap_rate === null)     set('quarterly_cap_rate', form.base_rate);
-            if (form.quarterly_cap_apply_to === null) set('quarterly_cap_apply_to', 'all');
-          }
-        }}
-        capLimit={form.quarterly_cap_limit}
-        onCapLimit={(v) => set('quarterly_cap_limit', v)}
-        capRate={form.quarterly_cap_rate}
-        onCapRate={(v) => set('quarterly_cap_rate', v)}
-        applyTo={form.quarterly_cap_apply_to}
-        onApplyTo={(v) => set('quarterly_cap_apply_to', v as MonthlyCapApplyTo)}
-      />
+      {/* ── 本地上限（HKD 簽賬）── */}
+      <SectionCard title="本地簽賬上限（HKD）" emoji="🏠" color="#7DAB8A">
+        <p className="text-xs" style={{ color: '#A8948A' }}>
+          僅計算本地（HKD）簽賬的累積金額。適用於設有本地消費上限的信用卡。
+        </p>
+        <div>
+          <Toggle
+            checked={hasLocalMonthly} label="每月本地上限"
+            onChange={(v) => {
+              setHasLocalMonthly(v);
+              if (v && form.local_monthly_cap === null) set('local_monthly_cap', 25000);
+            }}
+          />
+          {hasLocalMonthly && (
+            <div className="pl-11 mt-1">
+              <NumberField
+                label="每月本地上限（HKD）"
+                value={form.local_monthly_cap}
+                onChange={(v) => set('local_monthly_cap', v)}
+                unit="HKD 後降級"
+                min={1}
+                hint="每月本地簽賬累積超過此金額後，套用降級利率"
+              />
+            </div>
+          )}
+        </div>
+        <div>
+          <Toggle
+            checked={hasLocalQuarterly} label="每季本地上限"
+            onChange={(v) => {
+              setHasLocalQuarterly(v);
+              if (v && form.local_quarterly_cap === null) set('local_quarterly_cap', 75000);
+            }}
+          />
+          {hasLocalQuarterly && (
+            <div className="pl-11 mt-1">
+              <NumberField
+                label="每季本地上限（HKD）"
+                value={form.local_quarterly_cap}
+                onChange={(v) => set('local_quarterly_cap', v)}
+                unit="HKD 後降級"
+                min={1}
+                hint="每季（Q1=1-3月）本地簽賬累積超過此金額後，套用降級利率"
+              />
+            </div>
+          )}
+        </div>
+      </SectionCard>
 
-      {/* ボタン */}
+      {/* ── 海外上限（外幣簽賬）── */}
+      <SectionCard title="海外簽賬上限（外幣）" emoji="✈️" color="#AB7D9A">
+        <p className="text-xs" style={{ color: '#A8948A' }}>
+          僅計算海外（非 HKD）簽賬的累積金額。適用於 HSBC EveryMile、BOC Cheers 等設有海外消費上限的信用卡。
+        </p>
+        <div>
+          <Toggle
+            checked={hasOverseasMonthly} label="每月海外上限"
+            onChange={(v) => {
+              setHasOverseasMonthly(v);
+              if (v && form.overseas_monthly_cap === null) set('overseas_monthly_cap', 15000);
+            }}
+          />
+          {hasOverseasMonthly && (
+            <div className="pl-11 mt-1">
+              <NumberField
+                label="每月海外上限（HKD 等值）"
+                value={form.overseas_monthly_cap}
+                onChange={(v) => set('overseas_monthly_cap', v)}
+                unit="HKD 後降級"
+                min={1}
+                hint="例：HSBC EveryMile 每月海外 HKD 15,000 後降至基本利率"
+              />
+            </div>
+          )}
+        </div>
+        <div>
+          <Toggle
+            checked={hasOverseasQuarterly} label="每季海外上限"
+            onChange={(v) => {
+              setHasOverseasQuarterly(v);
+              if (v && form.overseas_quarterly_cap === null) set('overseas_quarterly_cap', 45000);
+            }}
+          />
+          {hasOverseasQuarterly && (
+            <div className="pl-11 mt-1">
+              <NumberField
+                label="每季海外上限（HKD 等值）"
+                value={form.overseas_quarterly_cap}
+                onChange={(v) => set('overseas_quarterly_cap', v)}
+                unit="HKD 後降級"
+                min={1}
+              />
+            </div>
+          )}
+        </div>
+      </SectionCard>
+
+      {/* ── 分類上限 ── */}
+      <SectionCard title="特定分類上限" emoji="🏷" color="#C07A4A">
+        <p className="text-xs" style={{ color: '#A8948A' }}>
+          針對特定消費分類設定獨立上限。例如：AE Explorer 飲食分類每季 HKD 10,000 享優惠利率。
+        </p>
+        <div>
+          <Toggle
+            checked={hasCatMonthly} label="設定每月分類上限"
+            onChange={(v) => {
+              setHasCatMonthly(v);
+              if (!v) set('category_monthly_caps', null);
+            }}
+          />
+          {hasCatMonthly && (
+            <div className="pl-4 mt-2">
+              <CategoryCapsEditor
+                label="每月分類上限"
+                value={form.category_monthly_caps}
+                onChange={(v) => set('category_monthly_caps', v)}
+              />
+            </div>
+          )}
+        </div>
+        <div>
+          <Toggle
+            checked={hasCatQuarterly} label="設定每季分類上限"
+            onChange={(v) => {
+              setHasCatQuarterly(v);
+              if (!v) set('category_quarterly_caps', null);
+            }}
+          />
+          {hasCatQuarterly && (
+            <div className="pl-4 mt-2">
+              <CategoryCapsEditor
+                label="每季分類上限"
+                value={form.category_quarterly_caps}
+                onChange={(v) => set('category_quarterly_caps', v)}
+              />
+            </div>
+          )}
+        </div>
+      </SectionCard>
+
+      {/* ── ボタン ── */}
       <div className="flex gap-3 pt-2">
         <button
           type="submit" disabled={isSaving}
@@ -410,7 +557,7 @@ function CardForm({
             boxShadow: '0 4px 12px rgba(154,115,80,0.30)',
           }}
         >
-          {isSaving ? '儲存中… ☕' : '儲存'}
+          {isSaving ? '儲存中… ☕' : '儲存規則'}
         </button>
         <button
           type="button" onClick={onCancel} disabled={isSaving}
@@ -421,6 +568,47 @@ function CardForm({
         </button>
       </div>
     </form>
+  );
+}
+
+// ============================================================
+// カードサマリーバッジ
+// ============================================================
+function CardBadges({ card }: { card: CreditCard }) {
+  const badges: { label: string; bg: string; color: string }[] = [
+    { label: `基本 HKD ${card.base_rate}/里`, bg: '#F5EDE3', color: '#9A7350' },
+  ];
+  if (card.overseas_rate !== null)
+    badges.push({ label: `海外 HKD ${card.overseas_rate}/里`, bg: '#FDF3E8', color: '#C07A4A' });
+  if (card.min_spend_hkd !== null)
+    badges.push({ label: `最低 HKD ${card.min_spend_hkd.toLocaleString()}`, bg: '#EEF5F0', color: '#7DAB8A' });
+  if (card.local_monthly_cap !== null)
+    badges.push({ label: `🏠月 HKD ${card.local_monthly_cap.toLocaleString()}`, bg: '#EEF5F0', color: '#7DAB8A' });
+  if (card.local_quarterly_cap !== null)
+    badges.push({ label: `🏠季 HKD ${card.local_quarterly_cap.toLocaleString()}`, bg: '#EEF5F0', color: '#5D8A6A' });
+  if (card.overseas_monthly_cap !== null)
+    badges.push({ label: `✈️月 HKD ${card.overseas_monthly_cap.toLocaleString()}`, bg: '#F5EEF3', color: '#AB7D9A' });
+  if (card.overseas_quarterly_cap !== null)
+    badges.push({ label: `✈️季 HKD ${card.overseas_quarterly_cap.toLocaleString()}`, bg: '#F5EEF3', color: '#8B5D7A' });
+  if (card.category_monthly_caps && Object.keys(card.category_monthly_caps).length > 0)
+    badges.push({ label: `分類月上限 ×${Object.keys(card.category_monthly_caps).length}`, bg: '#FDF3E8', color: '#C07A4A' });
+  if (card.category_quarterly_caps && Object.keys(card.category_quarterly_caps).length > 0)
+    badges.push({ label: `分類季上限 ×${Object.keys(card.category_quarterly_caps).length}`, bg: '#FDF3E8', color: '#A05A2A' });
+  if (card.capped_base_rate !== null)
+    badges.push({ label: `降級 HKD ${card.capped_base_rate}/里`, bg: '#EFE9E1', color: '#A8948A' });
+
+  return (
+    <div className="flex flex-wrap gap-1.5 mt-2">
+      {badges.map((b) => (
+        <span
+          key={b.label}
+          className="text-[10px] px-2 py-0.5 rounded-full font-medium"
+          style={{ background: b.bg, color: b.color }}
+        >
+          {b.label}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -444,8 +632,7 @@ export default function AdminPage() {
 
   const loadCards = useCallback(async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from('credit_cards').select('*').order('name');
+    const { data, error } = await supabase.from('credit_cards').select('*').order('name');
     if (!error && data) setCards(data as CreditCard[]);
     setLoading(false);
   }, []);
@@ -492,7 +679,7 @@ export default function AdminPage() {
       {/* ── トースト通知 ── */}
       {toast && (
         <div
-          className="fixed top-5 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-2xl text-sm font-medium shadow-lg transition-all animate-fade-in-up"
+          className="fixed top-5 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-2xl text-sm font-medium shadow-lg animate-fade-in-up"
           style={
             toast.type === 'ok'
               ? { background: 'linear-gradient(135deg, #9A7350, #C4A482)', color: '#FFFDF9' }
@@ -512,7 +699,7 @@ export default function AdminPage() {
               信用卡管理 🐦
             </h1>
             <p className="text-[10px] mt-0.5 tracking-widest uppercase" style={{ color: '#A8948A' }}>
-              Admin Panel · 現在 {QUARTER_LABELS[currentQ]}
+              🐧記帳本🐧 · 現在 {QUARTER_LABELS[currentQ]}
             </p>
           </div>
           {editingId === null && (
@@ -534,6 +721,27 @@ export default function AdminPage() {
             </button>
           )}
         </header>
+
+        {/* ── 上限設計說明 ── */}
+        <div
+          className="rounded-2xl p-4 text-xs space-y-1.5"
+          style={{ background: '#FDF3E8', border: '1px solid #E8D5C0', color: '#C07A4A' }}
+        >
+          <p className="font-semibold">☕ 上限設計說明</p>
+          <p>
+            <span className="font-medium">🏠 本地上限：</span>
+            只計算 HKD 簽賬（如渣打 Cathay 卡本地每月 HKD 25,000 享優惠）
+          </p>
+          <p>
+            <span className="font-medium">✈️ 海外上限：</span>
+            只計算非 HKD 簽賬（如 HSBC EveryMile 每月海外 HKD 15,000）
+          </p>
+          <p>
+            <span className="font-medium">🏷 分類上限：</span>
+            針對特定分類獨立計算（如 AE Explorer 飲食每季 HKD 10,000）
+          </p>
+          <p>若同時設定多個上限，系統自動選取對用戶最不利的計算結果。</p>
+        </div>
 
         {/* ── 新規作成フォーム ── */}
         {editingId === 'new' && (
@@ -561,7 +769,9 @@ export default function AdminPage() {
         {/* ── カードリスト ── */}
         {loading ? (
           <div className="space-y-3">
-            {[1, 2, 3].map((i) => <div key={i} className="h-24 skeleton" />)}
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="h-24 rounded-3xl animate-pulse" style={{ background: '#E0D4C6' }} />
+            ))}
           </div>
         ) : cards.length === 0 ? (
           <div
@@ -590,34 +800,11 @@ export default function AdminPage() {
                 >
                   {/* カードヘッダー */}
                   <div className="flex items-start justify-between p-5">
-                    <div className="space-y-2 flex-1 min-w-0">
+                    <div className="flex-1 min-w-0">
                       <h3 className="font-semibold" style={{ color: '#5C4A43' }}>{card.name}</h3>
-                      <div className="flex flex-wrap gap-1.5">
-                        <span className="badge-brown">基本 HKD {card.base_rate}/里</span>
-                        {card.overseas_rate !== null && (
-                          <span className="badge-latte">海外 HKD {card.overseas_rate}/里</span>
-                        )}
-                        {card.min_spend_hkd !== null && (
-                          <span className="badge-caramel">
-                            最低 HKD {card.min_spend_hkd.toLocaleString()}
-                          </span>
-                        )}
-                        {card.monthly_cap_limit !== null && (
-                          <span className="badge-rose">
-                            📅 月上限 HKD {card.monthly_cap_limit.toLocaleString()}
-                          </span>
-                        )}
-                        {card.quarterly_cap_limit !== null && (
-                          <span
-                            className="text-[10px] px-2 py-0.5 rounded-full font-medium"
-                            style={{ background: '#F0EEF8', color: '#7D6FAB' }}
-                          >
-                            🗓 季上限 HKD {card.quarterly_cap_limit.toLocaleString()}
-                          </span>
-                        )}
-                      </div>
-                      {Object.keys(card.category_rates).length > 0 && (
-                        <div className="flex flex-wrap gap-1">
+                      <CardBadges card={card} />
+                      {Object.keys(card.category_rates ?? {}).length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1.5">
                           {Object.entries(card.category_rates).map(([cat, rate]) => (
                             <span
                               key={cat}
@@ -704,17 +891,6 @@ export default function AdminPage() {
             })}
           </div>
         )}
-
-        {/* 注意事項 */}
-        <div
-          className="rounded-2xl p-4 text-xs space-y-1"
-          style={{ background: '#FDF3E8', border: '1px solid #E8D5C0', color: '#C07A4A' }}
-        >
-          <p className="font-semibold">☕ 注意事項</p>
-          <p>修改信用卡規則後，推薦引擎將在 60 秒內自動更新。</p>
-          <p>每季上限按 Q1（1–3月）、Q2（4–6月）、Q3（7–9月）、Q4（10–12月）計算。</p>
-          <p>若同時設定月間及季度上限，系統會自動選取對用戶較不利的上限進行計算。</p>
-        </div>
 
       </div>
     </div>
