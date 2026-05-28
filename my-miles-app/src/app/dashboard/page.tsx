@@ -1,9 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import type { Category, CardName } from '@/types';
 
+// ============================================================
+// 型定義
+// ============================================================
 interface DashboardData {
   totalSpentHKD: number;
   totalMiles: number;
@@ -13,6 +16,9 @@ interface DashboardData {
 
 const MILES_GOAL = 10000;
 
+// ============================================================
+// デザイン定数
+// ============================================================
 const CATEGORY_META: Record<string, { emoji: string; color: string; bg: string }> = {
   '飲食':     { emoji: '🍜', color: '#C07A4A', bg: '#FDF3E8' },
   '購物':     { emoji: '🛍', color: '#9A7350', bg: '#F5EDE3' },
@@ -25,7 +31,19 @@ const CATEGORY_META: Record<string, { emoji: string; color: string; bg: string }
   '雜項':     { emoji: '📋', color: '#A8948A', bg: '#EFE9E1' },
 };
 
-// カード背景グラデーション（インデックス順）
+// 奶茶風カラーパレット（円グラフ用）
+const PIE_COLORS = [
+  '#C07A4A', // 深橙茶
+  '#9A7350', // 拿鐵棕
+  '#7D8FAB', // 灰藍
+  '#7DAB8A', // 茶綠
+  '#AB7D9A', // 玫瑰紫
+  '#7A9AAB', // 天藍灰
+  '#C47A7A', // 玫瑰紅
+  '#B08B65', // 焦糖
+  '#A8948A', // 暖灰
+];
+
 const CARD_GRADIENTS = [
   'linear-gradient(135deg, #9A7350 0%, #C4A482 100%)',
   'linear-gradient(135deg, #C4A482 0%, #E0D4C6 100%)',
@@ -34,6 +52,187 @@ const CARD_GRADIENTS = [
   'linear-gradient(135deg, #B08B65 0%, #CDB99F 100%)',
 ];
 
+// ============================================================
+// SVG 円グラフコンポーネント（ライブラリ不要・純 SVG）
+// ============================================================
+interface PieSlice {
+  category: string;
+  total: number;
+  pct: number;
+  color: string;
+  emoji: string;
+}
+
+function PieChart({ slices, total }: { slices: PieSlice[]; total: number }) {
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const [animated, setAnimated]       = useState(false);
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  // マウント後にアニメーション開始
+  useEffect(() => {
+    const t = setTimeout(() => setAnimated(true), 100);
+    return () => clearTimeout(t);
+  }, []);
+
+  const SIZE   = 200;
+  const CX     = SIZE / 2;
+  const CY     = SIZE / 2;
+  const R      = 72;   // 外径
+  const R_HOLE = 42;   // 内径（ドーナツ穴）
+
+  // SVG パスを計算
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+
+  const buildPath = (startDeg: number, endDeg: number, r: number, rHole: number): string => {
+    const start = toRad(startDeg - 90);
+    const end   = toRad(endDeg - 90);
+    const large = endDeg - startDeg > 180 ? 1 : 0;
+
+    const x1 = CX + r * Math.cos(start);
+    const y1 = CY + r * Math.sin(start);
+    const x2 = CX + r * Math.cos(end);
+    const y2 = CY + r * Math.sin(end);
+    const x3 = CX + rHole * Math.cos(end);
+    const y3 = CY + rHole * Math.sin(end);
+    const x4 = CX + rHole * Math.cos(start);
+    const y4 = CY + rHole * Math.sin(start);
+
+    return [
+      `M ${x1} ${y1}`,
+      `A ${r} ${r} 0 ${large} 1 ${x2} ${y2}`,
+      `L ${x3} ${y3}`,
+      `A ${rHole} ${rHole} 0 ${large} 0 ${x4} ${y4}`,
+      'Z',
+    ].join(' ');
+  };
+
+  // 各スライスの角度を計算
+  const sliceAngles: { start: number; end: number }[] = [];
+  let cumulative = 0;
+  slices.forEach((s) => {
+    const deg = animated ? s.pct * 3.6 : 0;
+    sliceAngles.push({ start: cumulative, end: cumulative + deg });
+    cumulative += deg;
+  });
+
+  const activeSlice = activeIndex !== null ? slices[activeIndex] : null;
+
+  return (
+    <div className="flex flex-col items-center gap-4">
+      {/* SVG ドーナツチャート */}
+      <div className="relative" style={{ width: SIZE, height: SIZE }}>
+        <svg
+          ref={svgRef}
+          width={SIZE} height={SIZE}
+          viewBox={`0 0 ${SIZE} ${SIZE}`}
+          className="overflow-visible"
+        >
+          {/* 背景リング */}
+          <circle
+            cx={CX} cy={CY}
+            r={(R + R_HOLE) / 2}
+            fill="none"
+            stroke="#EFE9E1"
+            strokeWidth={R - R_HOLE}
+          />
+
+          {/* スライス */}
+          {slices.map((slice, i) => {
+            const { start, end } = sliceAngles[i];
+            if (end - start < 0.5) return null;
+            const isActive = activeIndex === i;
+            const scale    = isActive ? 1.06 : 1;
+
+            return (
+              <path
+                key={slice.category}
+                d={buildPath(start, end, R, R_HOLE)}
+                fill={slice.color}
+                opacity={activeIndex === null || isActive ? 1 : 0.55}
+                style={{
+                  transformOrigin: `${CX}px ${CY}px`,
+                  transform: `scale(${scale})`,
+                  transition: 'transform 0.2s ease, opacity 0.2s ease',
+                  cursor: 'pointer',
+                  filter: isActive ? 'drop-shadow(0 2px 6px rgba(92,74,67,0.25))' : 'none',
+                }}
+                onMouseEnter={() => setActiveIndex(i)}
+                onMouseLeave={() => setActiveIndex(null)}
+                onTouchStart={() => setActiveIndex(i === activeIndex ? null : i)}
+              />
+            );
+          })}
+
+          {/* 中央テキスト */}
+          {activeSlice ? (
+            <>
+              <text
+                x={CX} y={CY - 10}
+                textAnchor="middle" dominantBaseline="middle"
+                fontSize="18" fill="#5C4A43" fontWeight="300"
+              >
+                {activeSlice.pct.toFixed(1)}%
+              </text>
+              <text
+                x={CX} y={CY + 10}
+                textAnchor="middle" dominantBaseline="middle"
+                fontSize="9" fill="#A8948A" letterSpacing="0.5"
+              >
+                {activeSlice.emoji} {activeSlice.category}
+              </text>
+            </>
+          ) : (
+            <>
+              <text
+                x={CX} y={CY - 8}
+                textAnchor="middle" dominantBaseline="middle"
+                fontSize="11" fill="#A8948A" letterSpacing="1"
+              >
+                本月支出
+              </text>
+              <text
+                x={CX} y={CY + 10}
+                textAnchor="middle" dominantBaseline="middle"
+                fontSize="9" fill="#CDB99F"
+              >
+                HKD {total.toLocaleString('zh-HK', { maximumFractionDigits: 0 })}
+              </text>
+            </>
+          )}
+        </svg>
+      </div>
+
+      {/* 凡例 */}
+      <div className="w-full grid grid-cols-2 gap-x-4 gap-y-2">
+        {slices.map((slice, i) => (
+          <button
+            key={slice.category}
+            className="flex items-center gap-2 text-left transition-opacity active:scale-95"
+            style={{ opacity: activeIndex === null || activeIndex === i ? 1 : 0.45 }}
+            onMouseEnter={() => setActiveIndex(i)}
+            onMouseLeave={() => setActiveIndex(null)}
+            onTouchStart={() => setActiveIndex(i === activeIndex ? null : i)}
+          >
+            <div
+              className="w-2.5 h-2.5 rounded-full shrink-0"
+              style={{ background: slice.color }}
+            />
+            <span className="text-xs truncate" style={{ color: '#5C4A43' }}>
+              {slice.emoji} {slice.category}
+            </span>
+            <span className="text-xs ml-auto shrink-0" style={{ color: '#A8948A' }}>
+              {slice.pct.toFixed(0)}%
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Dashboard ページ本体
+// ============================================================
 export default function DashboardPage() {
   const [data, setData]       = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -55,7 +254,9 @@ export default function DashboardPage() {
       const totalMiles    = txs.reduce((s, t) => s + Number(t.miles_earned), 0);
 
       const catMap = new Map<string, number>();
-      txs.forEach((t) => catMap.set(t.category, (catMap.get(t.category) ?? 0) + Number(t.amount_hkd)));
+      txs.forEach((t) =>
+        catMap.set(t.category, (catMap.get(t.category) ?? 0) + Number(t.amount_hkd))
+      );
       const categoryBreakdown = Array.from(catMap.entries())
         .map(([category, total]) => ({ category: category as Category, total }))
         .sort((a, b) => b.total - a.total);
@@ -63,7 +264,10 @@ export default function DashboardPage() {
       const cardMap = new Map<string, { total: number; miles: number }>();
       txs.forEach((t) => {
         const p = cardMap.get(t.card_used) ?? { total: 0, miles: 0 };
-        cardMap.set(t.card_used, { total: p.total + Number(t.amount_hkd), miles: p.miles + Number(t.miles_earned) });
+        cardMap.set(t.card_used, {
+          total: p.total + Number(t.amount_hkd),
+          miles: p.miles + Number(t.miles_earned),
+        });
       });
       const cardBreakdown = Array.from(cardMap.entries())
         .map(([card, v]) => ({ card: card as CardName, ...v }))
@@ -91,6 +295,19 @@ export default function DashboardPage() {
 
   const milesProgress = Math.min(((data?.totalMiles ?? 0) / MILES_GOAL) * 100, 100);
   const monthLabel = new Date().toLocaleDateString('zh-HK', { year: 'numeric', month: 'long' });
+
+  // 円グラフ用スライスデータを生成
+  const pieSlices: PieSlice[] = (data?.categoryBreakdown ?? []).map((item, i) => {
+    const pct  = data!.totalSpentHKD > 0 ? (item.total / data!.totalSpentHKD) * 100 : 0;
+    const meta = CATEGORY_META[item.category] ?? { emoji: '📋', color: '#A8948A', bg: '#EFE9E1' };
+    return {
+      category: item.category,
+      total: item.total,
+      pct,
+      color: PIE_COLORS[i % PIE_COLORS.length],
+      emoji: meta.emoji,
+    };
+  });
 
   return (
     <div className="min-h-screen" style={{ background: '#EFE9E1' }}>
@@ -156,8 +373,6 @@ export default function DashboardPage() {
               <span className="text-xs ml-1" style={{ color: '#A8948A' }}>里</span>
             </div>
           </div>
-
-          {/* プログレスバー */}
           <div className="h-2.5 w-full rounded-full overflow-hidden" style={{ background: '#EFE9E1' }}>
             <div
               className="h-full rounded-full transition-all duration-1000 ease-out"
@@ -172,47 +387,64 @@ export default function DashboardPage() {
           </p>
         </div>
 
-        {/* ── 支出分類 ── */}
+        {/* ── 支出分類圓餅圖（新機能）── */}
         {data && data.categoryBreakdown.length > 0 ? (
           <div
-            className="rounded-3xl p-6 space-y-4"
+            className="rounded-3xl p-6 space-y-5"
             style={{
               background: '#FFFDF9',
               boxShadow: '0 4px 20px rgba(92,74,67,0.08)',
               border: '1px solid #EFE9E1',
             }}
           >
-            <h2 className="text-sm font-semibold" style={{ color: '#5C4A43' }}>
-              支出分類 🍜
-            </h2>
-            <div className="space-y-3">
+            {/* セクションヘッダー */}
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold" style={{ color: '#5C4A43' }}>
+                支出分類 🍜
+              </h2>
+              <span
+                className="text-[10px] px-2 py-1 rounded-full"
+                style={{ background: '#EFE9E1', color: '#A8948A' }}
+              >
+                點擊扇形查看詳情
+              </span>
+            </div>
+
+            {/* 円グラフ */}
+            <PieChart
+              slices={pieSlices}
+              total={data.totalSpentHKD}
+            />
+
+            {/* 横バー（補足） */}
+            <div className="space-y-2.5 pt-2" style={{ borderTop: '1px solid #EFE9E1' }}>
+              <p className="text-[10px] tracking-widest uppercase" style={{ color: '#A8948A' }}>
+                金額明細
+              </p>
               {data.categoryBreakdown.map(({ category, total }) => {
                 const pct  = data.totalSpentHKD > 0 ? (total / data.totalSpentHKD) * 100 : 0;
                 const meta = CATEGORY_META[category] ?? { emoji: '📋', color: '#A8948A', bg: '#EFE9E1' };
                 return (
-                  <div key={category} className="space-y-1.5">
-                    <div className="flex justify-between items-center text-sm">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="w-7 h-7 rounded-full flex items-center justify-center text-sm"
-                          style={{ background: meta.bg }}
-                        >
-                          {meta.emoji}
-                        </span>
+                  <div key={category} className="flex items-center gap-2">
+                    <span
+                      className="w-6 h-6 rounded-full flex items-center justify-center text-xs shrink-0"
+                      style={{ background: meta.bg }}
+                    >
+                      {meta.emoji}
+                    </span>
+                    <div className="flex-1 space-y-0.5">
+                      <div className="flex justify-between text-xs">
                         <span style={{ color: '#5C4A43' }}>{category}</span>
-                      </div>
-                      <span style={{ color: '#9A7350' }}>
-                        HKD {total.toLocaleString('zh-HK', { maximumFractionDigits: 0 })}
-                        <span className="text-xs ml-1" style={{ color: '#A8948A' }}>
-                          ({pct.toFixed(0)}%)
+                        <span style={{ color: '#9A7350' }}>
+                          HKD {total.toLocaleString('zh-HK', { maximumFractionDigits: 0 })}
                         </span>
-                      </span>
-                    </div>
-                    <div className="h-1.5 w-full rounded-full overflow-hidden" style={{ background: '#EFE9E1' }}>
-                      <div
-                        className="h-full rounded-full transition-all duration-700"
-                        style={{ width: `${pct}%`, background: meta.color }}
-                      />
+                      </div>
+                      <div className="h-1 w-full rounded-full overflow-hidden" style={{ background: '#EFE9E1' }}>
+                        <div
+                          className="h-full rounded-full transition-all duration-700"
+                          style={{ width: `${pct}%`, background: meta.color }}
+                        />
+                      </div>
                     </div>
                   </div>
                 );

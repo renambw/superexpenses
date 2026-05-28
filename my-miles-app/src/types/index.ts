@@ -18,7 +18,8 @@ export type CardName = string;
 // ============================================================
 // Supabase credit_cards テーブルの型定義
 // ============================================================
-export type MonthlyCapApplyTo = 'all' | 'overseas' | 'category';
+export type MonthlyCapApplyTo   = 'all' | 'overseas' | 'category';
+export type QuarterlyCapApplyTo = 'all' | 'overseas' | 'category';
 
 export interface CreditCard {
   id: string;
@@ -27,9 +28,16 @@ export interface CreditCard {
   overseas_rate: number | null;
   category_rates: Partial<Record<Category, number>>;
   min_spend_hkd: number | null;
-  monthly_cap_limit: number | null;
-  monthly_cap_rate: number | null;
+
+  // ── 每月上限 ──
+  monthly_cap_limit:    number | null;
+  monthly_cap_rate:     number | null;
   monthly_cap_apply_to: MonthlyCapApplyTo | null;
+
+  // ── 每季上限（新規追加） ──
+  quarterly_cap_limit:    number | null;
+  quarterly_cap_rate:     number | null;
+  quarterly_cap_apply_to: QuarterlyCapApplyTo | null;
 }
 
 // ============================================================
@@ -75,5 +83,14 @@ export interface MonthlyCardUsage {
   card_used: CardName;
   total_hkd_this_month: number;
   total_miles_this_month: number;
+  transaction_count: number;
+}
+
+export interface QuarterlyCardUsage {
+  card_used: CardName;
+  year: number;
+  quarter: number;
+  total_hkd_this_quarter: number;
+  total_miles_this_quarter: number;
   transaction_count: number;
 }
