@@ -3,7 +3,7 @@ import './globals.css';
 import BottomNav from '@/components/BottomNav';
 
 export const metadata: Metadata = {
-  title: 'Miles Tracker ☕',
+  title: '🐧記帳本🐧',
   description: '極簡奶茶風記帳與 Asia Miles 里數最佳化',
   manifest: '/manifest.json',
   appleWebApp: {
