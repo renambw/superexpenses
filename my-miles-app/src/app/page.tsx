@@ -10,6 +10,7 @@ const CATEGORIES: { label: Category; emoji: string }[] = [
   { label: '飲食',    emoji: '🍜' },
   { label: '購物',    emoji: '🛍' },
   { label: '酒店',    emoji: '🏨' },
+  { label: '旅遊',    emoji: '✈️' },
   { label: '交通',    emoji: '🚇' },
   { label: '娛樂',    emoji: '🎬' },
   { label: '通訊',    emoji: '📱' },

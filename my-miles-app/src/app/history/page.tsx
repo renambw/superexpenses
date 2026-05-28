@@ -8,6 +8,7 @@ const CATEGORY_META: Record<string, { emoji: string; bg: string; color: string }
   '飲食':     { emoji: '🍜', bg: '#FDF3E8', color: '#C07A4A' },
   '購物':     { emoji: '🛍', bg: '#F5EDE3', color: '#9A7350' },
   '酒店':     { emoji: '🏨', bg: '#EEF2F8', color: '#7D8FAB' },
+  '旅遊':     { emoji: '✈️', bg: '#EAF2F8', color: '#5D8AAB' },
   '交通':     { emoji: '🚇', bg: '#EEF5F0', color: '#7DAB8A' },
   '娛樂':     { emoji: '🎬', bg: '#F5EEF3', color: '#AB7D9A' },
   '通訊':     { emoji: '📱', bg: '#EEF3F5', color: '#7A9AAB' },

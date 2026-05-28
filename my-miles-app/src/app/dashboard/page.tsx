@@ -23,6 +23,7 @@ const CATEGORY_META: Record<string, { emoji: string; color: string; bg: string }
   '飲食':     { emoji: '🍜', color: '#C07A4A', bg: '#FDF3E8' },
   '購物':     { emoji: '🛍', color: '#9A7350', bg: '#F5EDE3' },
   '酒店':     { emoji: '🏨', color: '#7D8FAB', bg: '#EEF2F8' },
+  '旅遊':     { emoji: '✈️', color: '#5D8AAB', bg: '#EAF2F8' },
   '交通':     { emoji: '🚇', color: '#7DAB8A', bg: '#EEF5F0' },
   '娛樂':     { emoji: '🎬', color: '#AB7D9A', bg: '#F5EEF3' },
   '通訊':     { emoji: '📱', color: '#7A9AAB', bg: '#EEF3F5' },
