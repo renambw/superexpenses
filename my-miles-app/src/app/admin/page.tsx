@@ -27,7 +27,8 @@ const EMPTY_FORM: Omit<CreditCard, 'id'> = {
   overseas_rate: null,
   category_rates: {},
   min_spend_hkd: null,
-  // 旧来フィールド（後方互換）
+  min_spend_apply_to: null,
+  // 旧来フィールド（後方互換性）
   monthly_cap_limit: null,
   monthly_cap_rate: null,
   monthly_cap_apply_to: null,
@@ -298,6 +299,7 @@ function CardForm({ initial, onSave, onCancel, isSaving }: {
       ...form,
       overseas_rate:           hasOverseasRate ? form.overseas_rate : null,
       min_spend_hkd:           hasMinSpend ? form.min_spend_hkd : null,
+      min_spend_apply_to:      hasMinSpend ? (form.min_spend_apply_to ?? 'all') : null,
       capped_base_rate:        hasCappedRate ? form.capped_base_rate : null,
       local_monthly_cap:       hasLocalMonthly ? form.local_monthly_cap : null,
       local_quarterly_cap:     hasLocalQuarterly ? form.local_quarterly_cap : null,
@@ -365,7 +367,7 @@ function CardForm({ initial, onSave, onCancel, isSaving }: {
             }}
           />
           {hasMinSpend && (
-            <div className="pl-11 mt-1">
+            <div className="pl-11 mt-1 space-y-3">
               <NumberField
                 label="最低消費額（HKD）"
                 value={form.min_spend_hkd}
@@ -373,6 +375,35 @@ function CardForm({ initial, onSave, onCancel, isSaving }: {
                 unit="HKD 以上才享優惠"
                 min={1}
               />
+              {/* 適用範囲セレクトボックス */}
+              <div>
+                <label className="block text-[10px] tracking-widest uppercase mb-1.5" style={{ color: '#A8948A' }}>
+                  最低消費計算範圍
+                </label>
+                <select
+                  value={form.min_spend_apply_to ?? 'all'}
+                  onChange={(e) => set('min_spend_apply_to', e.target.value as 'all' | 'local' | 'overseas' | 'category')}
+                  className="w-full rounded-xl px-3 py-2 text-sm outline-none cursor-pointer"
+                  style={{
+                    background: '#EFE9E1',
+                    color: '#5C4A43',
+                    border: '1.5px solid #E0D4C6',
+                  }}
+                >
+                  <option value="all">📊 全部簽費（本地 + 海外）</option>
+                  <option value="local">🏠 僅本地簽費（HKD）</option>
+                  <option value="overseas">✈️ 僅海外簽費（外幣）</option>
+                  <option value="category">🏷️ 特定分類簽費</option>
+                </select>
+                <p className="text-[10px] mt-1" style={{ color: '#CDB99F' }}>
+                  {
+                    (form.min_spend_apply_to ?? 'all') === 'all' ? '累計本地 + 海外簽費總額達標才享優惠利率' :
+                    (form.min_spend_apply_to ?? 'all') === 'local' ? '僅累計本地（HKD）簽費達標才享優惠利率' :
+                    (form.min_spend_apply_to ?? 'all') === 'overseas' ? '僅累計海外（外幣）簽費達標才享優惠利率' :
+                    '僅累計特定分類簽費達標才享優惠利率'
+                  }
+                </p>
+              </div>
             </div>
           )}
         </div>
@@ -580,8 +611,11 @@ function CardBadges({ card }: { card: CreditCard }) {
   ];
   if (card.overseas_rate !== null)
     badges.push({ label: `海外 HKD ${card.overseas_rate}/里`, bg: '#FDF3E8', color: '#C07A4A' });
-  if (card.min_spend_hkd !== null)
-    badges.push({ label: `最低 HKD ${card.min_spend_hkd.toLocaleString()}`, bg: '#EEF5F0', color: '#7DAB8A' });
+  if (card.min_spend_hkd !== null) {
+    const applyToIcon: Record<string, string> = { all: '📊', local: '🏠', overseas: '✈️', category: '🏷️' };
+    const icon = applyToIcon[card.min_spend_apply_to ?? 'all'] ?? '📊';
+    badges.push({ label: `${icon}最低 HKD ${card.min_spend_hkd.toLocaleString()}`, bg: '#EEF5F0', color: '#7DAB8A' });
+  }
   if (card.local_monthly_cap !== null)
     badges.push({ label: `🏠月 HKD ${card.local_monthly_cap.toLocaleString()}`, bg: '#EEF5F0', color: '#7DAB8A' });
   if (card.local_quarterly_cap !== null)

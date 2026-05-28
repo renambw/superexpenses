@@ -432,7 +432,11 @@ export default function HomePage() {
                           {rec.isBelowMinSpend && (
                             <span
                               className="text-[9px] px-1.5 py-0.5 rounded-full"
-                              style={{ background: '#FDF3E8', color: '#C07A4A' }}
+                              style={
+                                isBest && !isSaved
+                                  ? { background: 'rgba(253,236,228,0.25)', color: '#FDECE4' }
+                                  : { background: '#FDF3E8', color: '#C07A4A' }
+                              }
                             >
                               ⚠ 未達最低消費
                             </span>
@@ -440,11 +444,11 @@ export default function HomePage() {
                         </div>
                         <p
                           className="text-xs"
-                          style={{ color: isBest && !isSaved ? 'rgba(255,253,249,0.75)' : '#A8948A' }}
+                          style={{ color: isBest && !isSaved ? 'rgba(255,253,249,0.80)' : '#A8948A' }}
                         >
                           HKD {rec.effectiveRate}/里
                           {rec.isCapped && (
-                            <span style={{ color: isBest ? 'rgba(255,253,249,0.85)' : '#D4956A' }}>
+                            <span style={{ color: isBest && !isSaved ? '#FDECE4' : '#D4956A' }}>
                               {' '}⚠ 已達上限
                             </span>
                           )}
@@ -452,13 +456,16 @@ export default function HomePage() {
                         {rec.isCapped && rec.cappedNote && (
                           <p
                             className="text-[10px] leading-tight"
-                            style={{ color: isBest && !isSaved ? 'rgba(255,253,249,0.7)' : '#D4956A' }}
+                            style={{ color: isBest && !isSaved ? '#FDECE4' : '#D4956A' }}
                           >
                             {rec.cappedNote}
                           </p>
                         )}
                         {rec.isBelowMinSpend && rec.minSpendNote && (
-                          <p className="text-[10px] leading-tight" style={{ color: '#C07A4A' }}>
+                          <p
+                            className="text-[10px] leading-tight"
+                            style={{ color: isBest && !isSaved ? '#FDECE4' : '#C07A4A' }}
+                          >
                             {rec.minSpendNote}
                           </p>
                         )}

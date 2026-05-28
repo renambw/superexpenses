@@ -19,6 +19,7 @@ export type CardName = string;
 // ============================================================
 export type MonthlyCapApplyTo   = 'all' | 'overseas' | 'category';
 export type QuarterlyCapApplyTo = 'all' | 'overseas' | 'category';
+export type MinSpendApplyTo     = 'all' | 'local' | 'overseas' | 'category';
 
 export interface CreditCard {
   id: string;
@@ -27,6 +28,7 @@ export interface CreditCard {
   overseas_rate: number | null;
   category_rates: Partial<Record<Category, number>>;
   min_spend_hkd: number | null;
+  min_spend_apply_to: MinSpendApplyTo | null;
 
   // ── 旧来の上限フィールド（後方互換性のために保持） ──
   monthly_cap_limit:    number | null;

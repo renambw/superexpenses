@@ -228,10 +228,40 @@ function calculateMilesForCard(
   let minSpendNote: string | undefined;
   let milesEarned: number | undefined;
 
-  // ── ステップ 1：最低消費額チェック ──
-  if (card.min_spend_hkd !== null && amountHKD < card.min_spend_hkd) {
-    isBelowMinSpend = true;
-    minSpendNote = `需達 HKD ${card.min_spend_hkd.toLocaleString()} 最低消費`;
+  // ── ステップ 1：最低消費額チェック（min_spend_apply_to 対応版）──
+  // min_spend_apply_to に従って累積金額を選択し、「累積 + 今回」が最低消費未満なら強制降級
+  if (card.min_spend_hkd !== null) {
+    const applyTo = card.min_spend_apply_to ?? 'all';
+
+    // 適用範囲に応じた累積金額を計算
+    let accumulatedUsage: number;
+    switch (applyTo) {
+      case 'local':
+        accumulatedUsage = monthly.local;
+        break;
+      case 'overseas':
+        accumulatedUsage = monthly.overseas;
+        break;
+      case 'category':
+        accumulatedUsage = monthly.category[category as Category] ?? 0;
+        break;
+      case 'all':
+      default:
+        accumulatedUsage = monthly.local + monthly.overseas;
+        break;
+    }
+
+    const projectedTotal = accumulatedUsage + amountHKD;
+    if (projectedTotal < card.min_spend_hkd) {
+      isBelowMinSpend = true;
+      const applyToLabel: Record<string, string> = {
+        all: '全部簽費',
+        local: '本地簽費',
+        overseas: '海外簽費',
+        category: `${category}分類簽費`,
+      };
+      minSpendNote = `需達 HKD ${card.min_spend_hkd.toLocaleString()}（${applyToLabel[applyTo]}）最低消費`;
+    }
   }
 
   // ── ステップ 2：適用利率を決定（分類 > 海外 > 基本）──
@@ -243,9 +273,25 @@ function calculateMilesForCard(
     isOverseasBonus = true;
   }
   const preferentialRate = effectiveRate;
-
   // 降級後利率（capped_base_rate が設定されていれば使用）
   const fallbackCappedRate = card.capped_base_rate ?? card.base_rate;
+
+  // ── 最低消費未達の場合：全ての上限チェックをスキップし、即座に降級利率を適用 ──
+  if (isBelowMinSpend) {
+    const forcedRate = fallbackCappedRate;
+    return {
+      cardId: card.id,
+      cardName: card.name,
+      milesEarned: parseFloat((amountHKD / forcedRate).toFixed(2)),
+      effectiveRate: forcedRate,
+      baseRate: card.base_rate,
+      isCapped: true,
+      cappedNote: '未達最低消費要求，暫計基本里數',
+      isOverseasBonus: false,
+      isBelowMinSpend: true,
+      minSpendNote,
+    };
+  }
 
   // 現在の最良結果（上限チェック前）
   let best: BestResult = { effectiveRate, isCapped: false };
