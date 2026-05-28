@@ -112,7 +112,7 @@ export default function HomePage() {
               記帳 ✏️
             </h1>
             <p className="text-[10px] mt-0.5 tracking-widest uppercase" style={{ color: '#A8948A' }}>
-              Miles Tracker
+              🐧記帳本🐧
             </p>
           </div>
           <div
