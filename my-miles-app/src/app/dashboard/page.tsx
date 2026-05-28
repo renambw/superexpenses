@@ -13,17 +13,26 @@ interface DashboardData {
 
 const MILES_GOAL = 10000;
 
-const CATEGORY_COLORS: Record<string, string> = {
-  '飲食': 'bg-rose-400',
-  '購物': 'bg-violet-400',
-  '酒店': 'bg-blue-400',
-  '交通': 'bg-sky-400',
-  '娛樂': 'bg-amber-400',
-  '通訊': 'bg-teal-400',
-  '手信/禮物': 'bg-pink-400',
-  '醫療/保險': 'bg-green-400',
-  '雜項': 'bg-gray-400',
+const CATEGORY_META: Record<string, { emoji: string; color: string; bg: string }> = {
+  '飲食':     { emoji: '🍜', color: '#C07A4A', bg: '#FDF3E8' },
+  '購物':     { emoji: '🛍', color: '#9A7350', bg: '#F5EDE3' },
+  '酒店':     { emoji: '🏨', color: '#7D8FAB', bg: '#EEF2F8' },
+  '交通':     { emoji: '🚇', color: '#7DAB8A', bg: '#EEF5F0' },
+  '娛樂':     { emoji: '🎬', color: '#AB7D9A', bg: '#F5EEF3' },
+  '通訊':     { emoji: '📱', color: '#7A9AAB', bg: '#EEF3F5' },
+  '手信/禮物': { emoji: '🎁', color: '#C47A7A', bg: '#FDF0F0' },
+  '醫療/保險': { emoji: '💊', color: '#7DAB8A', bg: '#EEF5F0' },
+  '雜項':     { emoji: '📋', color: '#A8948A', bg: '#EFE9E1' },
 };
+
+// カード背景グラデーション（インデックス順）
+const CARD_GRADIENTS = [
+  'linear-gradient(135deg, #9A7350 0%, #C4A482 100%)',
+  'linear-gradient(135deg, #C4A482 0%, #E0D4C6 100%)',
+  'linear-gradient(135deg, #7D5C3E 0%, #9A7350 100%)',
+  'linear-gradient(135deg, #CDB99F 0%, #EFE9E1 100%)',
+  'linear-gradient(135deg, #B08B65 0%, #CDB99F 100%)',
+];
 
 export default function DashboardPage() {
   const [data, setData]       = useState<DashboardData | null>(null);
@@ -31,8 +40,9 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const fetchData = async () => {
-      const now      = new Date();
-      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+      const firstDay = new Date(
+        new Date().getFullYear(), new Date().getMonth(), 1
+      ).toISOString();
 
       const { data: txs, error } = await supabase
         .from('transactions')
@@ -45,20 +55,15 @@ export default function DashboardPage() {
       const totalMiles    = txs.reduce((s, t) => s + Number(t.miles_earned), 0);
 
       const catMap = new Map<string, number>();
-      txs.forEach((t) => {
-        catMap.set(t.category, (catMap.get(t.category) ?? 0) + Number(t.amount_hkd));
-      });
+      txs.forEach((t) => catMap.set(t.category, (catMap.get(t.category) ?? 0) + Number(t.amount_hkd)));
       const categoryBreakdown = Array.from(catMap.entries())
         .map(([category, total]) => ({ category: category as Category, total }))
         .sort((a, b) => b.total - a.total);
 
       const cardMap = new Map<string, { total: number; miles: number }>();
       txs.forEach((t) => {
-        const prev = cardMap.get(t.card_used) ?? { total: 0, miles: 0 };
-        cardMap.set(t.card_used, {
-          total: prev.total + Number(t.amount_hkd),
-          miles: prev.miles + Number(t.miles_earned),
-        });
+        const p = cardMap.get(t.card_used) ?? { total: 0, miles: 0 };
+        cardMap.set(t.card_used, { total: p.total + Number(t.amount_hkd), miles: p.miles + Number(t.miles_earned) });
       });
       const cardBreakdown = Array.from(cardMap.entries())
         .map(([card, v]) => ({ card: card as CardName, ...v }))
@@ -67,14 +72,19 @@ export default function DashboardPage() {
       setData({ totalSpentHKD, totalMiles, categoryBreakdown, cardBreakdown });
       setLoading(false);
     };
-
     fetchData();
   }, []);
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="w-7 h-7 border-2 border-gray-900 border-t-transparent rounded-full animate-spin" />
+      <div className="min-h-screen flex items-center justify-center" style={{ background: '#EFE9E1' }}>
+        <div className="flex flex-col items-center gap-3">
+          <div
+            className="w-8 h-8 rounded-full border-2 border-t-transparent animate-spin"
+            style={{ borderColor: '#C4A482', borderTopColor: 'transparent' }}
+          />
+          <p className="text-sm" style={{ color: '#A8948A' }}>載入中 ☕</p>
+        </div>
       </div>
     );
   }
@@ -83,64 +93,126 @@ export default function DashboardPage() {
   const monthLabel = new Date().toLocaleDateString('zh-HK', { year: 'numeric', month: 'long' });
 
   return (
-    <div className="min-h-screen text-gray-900">
-      <div className="max-w-md mx-auto px-5 pt-12 pb-6 space-y-6">
+    <div className="min-h-screen" style={{ background: '#EFE9E1' }}>
+      <div className="max-w-md mx-auto px-5 pt-12 pb-6 space-y-5">
 
-        {/* Header */}
-        <header>
-          <h1 className="text-2xl font-light tracking-tight">總覽</h1>
-          <p className="text-[10px] text-gray-400 mt-0.5 tracking-widest uppercase">{monthLabel}</p>
+        {/* ── Header ── */}
+        <header className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold" style={{ color: '#5C4A43' }}>
+              總覽 ☕
+            </h1>
+            <p className="text-[10px] mt-0.5 tracking-widest uppercase" style={{ color: '#A8948A' }}>
+              {monthLabel}
+            </p>
+          </div>
+          <div
+            className="px-3 py-1.5 rounded-full text-xs font-medium"
+            style={{ background: '#FFFDF9', color: '#9A7350', boxShadow: '0 2px 8px rgba(92,74,67,0.10)' }}
+          >
+            本月報告
+          </div>
         </header>
 
-        {/* 本月總支出 */}
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-8 text-center space-y-2">
-          <p className="text-[10px] text-gray-400 uppercase tracking-widest">本月總支出</p>
-          <p className="text-5xl font-extralight tracking-tight tabular-nums">
+        {/* ── 本月總支出 ── */}
+        <div
+          className="rounded-3xl p-8 text-center space-y-2"
+          style={{
+            background: 'linear-gradient(135deg, #9A7350 0%, #C4A482 100%)',
+            boxShadow: '0 8px 32px rgba(154,115,80,0.30)',
+          }}
+        >
+          <p className="text-[10px] tracking-widest uppercase" style={{ color: 'rgba(255,253,249,0.7)' }}>
+            本月總支出
+          </p>
+          <p className="text-5xl font-extralight tracking-tight" style={{ color: '#FFFDF9' }}>
             ${(data?.totalSpentHKD ?? 0).toLocaleString('zh-HK', { maximumFractionDigits: 0 })}
           </p>
-          <p className="text-xs text-gray-400">HKD</p>
+          <p className="text-xs" style={{ color: 'rgba(255,253,249,0.6)' }}>HKD</p>
         </div>
 
-        {/* Asia Miles 進度 */}
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 space-y-4">
+        {/* ── Asia Miles 進度 ── */}
+        <div
+          className="rounded-3xl p-6 space-y-4"
+          style={{
+            background: '#FFFDF9',
+            boxShadow: '0 4px 20px rgba(92,74,67,0.08)',
+            border: '1px solid #EFE9E1',
+          }}
+        >
           <div className="flex justify-between items-end">
-            <h2 className="text-sm font-medium text-gray-700">Asia Miles 進度</h2>
+            <div>
+              <p className="text-[10px] tracking-widest uppercase mb-1" style={{ color: '#A8948A' }}>
+                🌸 Asia Miles 進度
+              </p>
+              <p className="text-sm font-medium" style={{ color: '#5C4A43' }}>
+                目標 {MILES_GOAL.toLocaleString()} 里
+              </p>
+            </div>
             <div className="text-right">
-              <span className="text-2xl font-light tabular-nums">
+              <span className="text-3xl font-light" style={{ color: '#9A7350' }}>
                 {Math.floor(data?.totalMiles ?? 0).toLocaleString()}
               </span>
-              <span className="text-xs text-gray-400 ml-1">/ {MILES_GOAL.toLocaleString()}</span>
+              <span className="text-xs ml-1" style={{ color: '#A8948A' }}>里</span>
             </div>
           </div>
-          <div className="h-1.5 w-full bg-gray-100 rounded-full overflow-hidden">
+
+          {/* プログレスバー */}
+          <div className="h-2.5 w-full rounded-full overflow-hidden" style={{ background: '#EFE9E1' }}>
             <div
-              className="h-full bg-gray-900 rounded-full transition-all duration-1000 ease-out"
-              style={{ width: `${milesProgress}%` }}
+              className="h-full rounded-full transition-all duration-1000 ease-out"
+              style={{
+                width: `${milesProgress}%`,
+                background: 'linear-gradient(90deg, #9A7350, #C4A482)',
+              }}
             />
           </div>
-          <p className="text-xs text-gray-400 text-right">已達成 {milesProgress.toFixed(1)}%</p>
+          <p className="text-xs text-right" style={{ color: '#A8948A' }}>
+            已達成 {milesProgress.toFixed(1)}%
+          </p>
         </div>
 
-        {/* 支出分類 */}
+        {/* ── 支出分類 ── */}
         {data && data.categoryBreakdown.length > 0 ? (
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 space-y-4">
-            <h2 className="text-sm font-medium text-gray-700">支出分類</h2>
+          <div
+            className="rounded-3xl p-6 space-y-4"
+            style={{
+              background: '#FFFDF9',
+              boxShadow: '0 4px 20px rgba(92,74,67,0.08)',
+              border: '1px solid #EFE9E1',
+            }}
+          >
+            <h2 className="text-sm font-semibold" style={{ color: '#5C4A43' }}>
+              支出分類 🍜
+            </h2>
             <div className="space-y-3">
               {data.categoryBreakdown.map(({ category, total }) => {
-                const pct = data.totalSpentHKD > 0 ? (total / data.totalSpentHKD) * 100 : 0;
-                const color = CATEGORY_COLORS[category] ?? 'bg-gray-400';
+                const pct  = data.totalSpentHKD > 0 ? (total / data.totalSpentHKD) * 100 : 0;
+                const meta = CATEGORY_META[category] ?? { emoji: '📋', color: '#A8948A', bg: '#EFE9E1' };
                 return (
                   <div key={category} className="space-y-1.5">
-                    <div className="flex justify-between text-sm">
-                      <span className="text-gray-600">{category}</span>
-                      <span className="text-gray-900 tabular-nums">
+                    <div className="flex justify-between items-center text-sm">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="w-7 h-7 rounded-full flex items-center justify-center text-sm"
+                          style={{ background: meta.bg }}
+                        >
+                          {meta.emoji}
+                        </span>
+                        <span style={{ color: '#5C4A43' }}>{category}</span>
+                      </div>
+                      <span style={{ color: '#9A7350' }}>
                         HKD {total.toLocaleString('zh-HK', { maximumFractionDigits: 0 })}
-                        <span className="text-gray-400 ml-1.5 text-xs">({pct.toFixed(0)}%)</span>
+                        <span className="text-xs ml-1" style={{ color: '#A8948A' }}>
+                          ({pct.toFixed(0)}%)
+                        </span>
                       </span>
                     </div>
-                    <div className="h-1 w-full bg-gray-100 rounded-full overflow-hidden">
-                      <div className={`h-full ${color} rounded-full transition-all duration-700`}
-                        style={{ width: `${pct}%` }} />
+                    <div className="h-1.5 w-full rounded-full overflow-hidden" style={{ background: '#EFE9E1' }}>
+                      <div
+                        className="h-full rounded-full transition-all duration-700"
+                        style={{ width: `${pct}%`, background: meta.color }}
+                      />
                     </div>
                   </div>
                 );
@@ -148,28 +220,52 @@ export default function DashboardPage() {
             </div>
           </div>
         ) : (
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-8 text-center">
-            <p className="text-sm text-gray-400">本月尚無消費紀錄</p>
-            <p className="text-xs text-gray-300 mt-1">開始記帳後，分類統計將顯示於此</p>
+          <div
+            className="rounded-3xl p-10 text-center"
+            style={{ background: '#FFFDF9', border: '1px solid #EFE9E1' }}
+          >
+            <p className="text-2xl mb-2">🌸</p>
+            <p className="text-sm" style={{ color: '#A8948A' }}>本月尚無消費紀錄</p>
+            <p className="text-xs mt-1" style={{ color: '#CDB99F' }}>開始記帳後，分類統計將顯示於此</p>
           </div>
         )}
 
-        {/* 信用卡使用 */}
+        {/* ── 信用卡使用 ── */}
         {data && data.cardBreakdown.length > 0 && (
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 space-y-4">
-            <h2 className="text-sm font-medium text-gray-700">信用卡使用</h2>
-            <div className="space-y-1">
-              {data.cardBreakdown.map(({ card, total, miles }) => (
-                <div key={card}
-                  className="flex justify-between items-center py-3 border-b border-gray-50 last:border-0"
+          <div
+            className="rounded-3xl p-6 space-y-4"
+            style={{
+              background: '#FFFDF9',
+              boxShadow: '0 4px 20px rgba(92,74,67,0.08)',
+              border: '1px solid #EFE9E1',
+            }}
+          >
+            <h2 className="text-sm font-semibold" style={{ color: '#5C4A43' }}>
+              信用卡使用 🐦
+            </h2>
+            <div className="space-y-3">
+              {data.cardBreakdown.map(({ card, total, miles }, i) => (
+                <div
+                  key={card}
+                  className="flex items-center gap-3 p-3 rounded-2xl"
+                  style={{ background: '#FAF7F3' }}
                 >
-                  <div>
-                    <p className="text-sm text-gray-800">{card}</p>
-                    <p className="text-xs text-gray-400 mt-0.5">
+                  <div
+                    className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
+                    style={{
+                      background: CARD_GRADIENTS[i % CARD_GRADIENTS.length],
+                      color: '#FFFDF9',
+                    }}
+                  >
+                    {i + 1}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate" style={{ color: '#5C4A43' }}>{card}</p>
+                    <p className="text-xs mt-0.5" style={{ color: '#A8948A' }}>
                       +{Math.floor(miles).toLocaleString()} Asia Miles
                     </p>
                   </div>
-                  <p className="text-sm font-medium tabular-nums">
+                  <p className="text-sm font-semibold shrink-0" style={{ color: '#9A7350' }}>
                     HKD {total.toLocaleString('zh-HK', { maximumFractionDigits: 0 })}
                   </p>
                 </div>
