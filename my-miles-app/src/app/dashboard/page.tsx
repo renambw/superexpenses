@@ -14,7 +14,7 @@ interface DashboardData {
   cardBreakdown: { card: CardName; total: number; miles: number }[];
 }
 
-const MILES_GOAL = 10000;
+const MILES_GOAL_KEY = 'milesGoal'; // localStorage キー
 
 // ============================================================
 // デザイン定数
@@ -68,7 +68,6 @@ function PieChart({ slices, total }: { slices: PieSlice[]; total: number }) {
   const [animated, setAnimated]       = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
 
-  // マウント後にアニメーション開始
   useEffect(() => {
     const t = setTimeout(() => setAnimated(true), 100);
     return () => clearTimeout(t);
@@ -77,10 +76,9 @@ function PieChart({ slices, total }: { slices: PieSlice[]; total: number }) {
   const SIZE   = 200;
   const CX     = SIZE / 2;
   const CY     = SIZE / 2;
-  const R      = 72;   // 外径
-  const R_HOLE = 42;   // 内径（ドーナツ穴）
+  const R      = 72;
+  const R_HOLE = 42;
 
-  // SVG パスを計算
   const toRad = (deg: number) => (deg * Math.PI) / 180;
 
   const buildPath = (startDeg: number, endDeg: number, r: number, rHole: number): string => {
@@ -106,7 +104,6 @@ function PieChart({ slices, total }: { slices: PieSlice[]; total: number }) {
     ].join(' ');
   };
 
-  // 各スライスの角度を計算
   const sliceAngles: { start: number; end: number }[] = [];
   let cumulative = 0;
   slices.forEach((s) => {
@@ -119,7 +116,6 @@ function PieChart({ slices, total }: { slices: PieSlice[]; total: number }) {
 
   return (
     <div className="flex flex-col items-center gap-4">
-      {/* SVG ドーナツチャート */}
       <div className="relative" style={{ width: SIZE, height: SIZE }}>
         <svg
           ref={svgRef}
@@ -127,7 +123,6 @@ function PieChart({ slices, total }: { slices: PieSlice[]; total: number }) {
           viewBox={`0 0 ${SIZE} ${SIZE}`}
           className="overflow-visible"
         >
-          {/* 背景リング */}
           <circle
             cx={CX} cy={CY}
             r={(R + R_HOLE) / 2}
@@ -135,14 +130,11 @@ function PieChart({ slices, total }: { slices: PieSlice[]; total: number }) {
             stroke="#EFE9E1"
             strokeWidth={R - R_HOLE}
           />
-
-          {/* スライス */}
           {slices.map((slice, i) => {
             const { start, end } = sliceAngles[i];
             if (end - start < 0.5) return null;
             const isActive = activeIndex === i;
             const scale    = isActive ? 1.06 : 1;
-
             return (
               <path
                 key={slice.category}
@@ -162,47 +154,31 @@ function PieChart({ slices, total }: { slices: PieSlice[]; total: number }) {
               />
             );
           })}
-
-          {/* 中央テキスト */}
           {activeSlice ? (
             <>
-              <text
-                x={CX} y={CY - 10}
-                textAnchor="middle" dominantBaseline="middle"
-                fontSize="18" fill="#5C4A43" fontWeight="300"
-              >
+              <text x={CX} y={CY - 10} textAnchor="middle" dominantBaseline="middle"
+                fontSize="18" fill="#5C4A43" fontWeight="300">
                 {activeSlice.pct.toFixed(1)}%
               </text>
-              <text
-                x={CX} y={CY + 10}
-                textAnchor="middle" dominantBaseline="middle"
-                fontSize="9" fill="#A8948A" letterSpacing="0.5"
-              >
+              <text x={CX} y={CY + 10} textAnchor="middle" dominantBaseline="middle"
+                fontSize="9" fill="#A8948A" letterSpacing="0.5">
                 {activeSlice.emoji} {activeSlice.category}
               </text>
             </>
           ) : (
             <>
-              <text
-                x={CX} y={CY - 8}
-                textAnchor="middle" dominantBaseline="middle"
-                fontSize="11" fill="#A8948A" letterSpacing="1"
-              >
+              <text x={CX} y={CY - 8} textAnchor="middle" dominantBaseline="middle"
+                fontSize="11" fill="#A8948A" letterSpacing="1">
                 本月支出
               </text>
-              <text
-                x={CX} y={CY + 10}
-                textAnchor="middle" dominantBaseline="middle"
-                fontSize="9" fill="#CDB99F"
-              >
+              <text x={CX} y={CY + 10} textAnchor="middle" dominantBaseline="middle"
+                fontSize="9" fill="#CDB99F">
                 HKD {total.toLocaleString('zh-HK', { maximumFractionDigits: 0 })}
               </text>
             </>
           )}
         </svg>
       </div>
-
-      {/* 凡例 */}
       <div className="w-full grid grid-cols-2 gap-x-4 gap-y-2">
         {slices.map((slice, i) => (
           <button
@@ -213,10 +189,7 @@ function PieChart({ slices, total }: { slices: PieSlice[]; total: number }) {
             onMouseLeave={() => setActiveIndex(null)}
             onTouchStart={() => setActiveIndex(i === activeIndex ? null : i)}
           >
-            <div
-              className="w-2.5 h-2.5 rounded-full shrink-0"
-              style={{ background: slice.color }}
-            />
+            <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: slice.color }} />
             <span className="text-xs truncate" style={{ color: '#5C4A43' }}>
               {slice.emoji} {slice.category}
             </span>
@@ -237,6 +210,43 @@ export default function DashboardPage() {
   const [data, setData]       = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // ── 里数目標（localStorage で永続化）──────────────────────
+  const [milesGoal, setMilesGoal]         = useState<number>(10000);
+  const [isEditingGoal, setIsEditingGoal] = useState(false);
+  const [goalInput, setGoalInput]         = useState('');
+  const goalInputRef = useRef<HTMLInputElement>(null);
+
+  // localStorage から初期値を読み込む（SSR 対策で useEffect 内）
+  useEffect(() => {
+    const stored = localStorage.getItem(MILES_GOAL_KEY);
+    if (stored !== null) {
+      const parsed = parseInt(stored, 10);
+      if (!isNaN(parsed) && parsed >= 0) setMilesGoal(parsed);
+    }
+  }, []);
+
+  // 編集モードに入ったとき input にフォーカス
+  useEffect(() => {
+    if (isEditingGoal && goalInputRef.current) {
+      goalInputRef.current.focus();
+      goalInputRef.current.select();
+    }
+  }, [isEditingGoal]);
+
+  const handleGoalSave = () => {
+    const val = parseInt(goalInput, 10);
+    const newGoal = isNaN(val) || val < 0 ? 0 : val;
+    setMilesGoal(newGoal);
+    localStorage.setItem(MILES_GOAL_KEY, String(newGoal));
+    setIsEditingGoal(false);
+  };
+
+  const handleGoalKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') handleGoalSave();
+    if (e.key === 'Escape') setIsEditingGoal(false);
+  };
+
+  // ── データ取得 ──────────────────────────────────────────────
   useEffect(() => {
     const fetchData = async () => {
       const firstDay = new Date(
@@ -293,10 +303,13 @@ export default function DashboardPage() {
     );
   }
 
-  const milesProgress = Math.min(((data?.totalMiles ?? 0) / MILES_GOAL) * 100, 100);
+  // 目標が 0 の場合は進度条を非表示
+  const hasGoal       = milesGoal > 0;
+  const milesProgress = hasGoal
+    ? Math.min(((data?.totalMiles ?? 0) / milesGoal) * 100, 100)
+    : 0;
   const monthLabel = new Date().toLocaleDateString('zh-HK', { year: 'numeric', month: 'long' });
 
-  // 円グラフ用スライスデータを生成
   const pieSlices: PieSlice[] = (data?.categoryBreakdown ?? []).map((item, i) => {
     const pct  = data!.totalSpentHKD > 0 ? (item.total / data!.totalSpentHKD) * 100 : 0;
     const meta = CATEGORY_META[item.category] ?? { emoji: '📋', color: '#A8948A', bg: '#EFE9E1' };
@@ -327,7 +340,7 @@ export default function DashboardPage() {
             className="px-3 py-1.5 rounded-full text-xs font-medium"
             style={{ background: '#FFFDF9', color: '#9A7350', boxShadow: '0 2px 8px rgba(92,74,67,0.10)' }}
           >
-            本月報告
+            🐧記帳本🐧
           </div>
         </header>
 
@@ -348,7 +361,7 @@ export default function DashboardPage() {
           <p className="text-xs" style={{ color: 'rgba(255,253,249,0.6)' }}>HKD</p>
         </div>
 
-        {/* ── Asia Miles 進度 ── */}
+        {/* ── Asia Miles 進度（里数目標 動的編集対応）── */}
         <div
           className="rounded-3xl p-6 space-y-4"
           style={{
@@ -357,37 +370,107 @@ export default function DashboardPage() {
             border: '1px solid #EFE9E1',
           }}
         >
-          <div className="flex justify-between items-end">
-            <div>
+          <div className="flex justify-between items-start">
+            <div className="flex-1 min-w-0">
               <p className="text-[10px] tracking-widest uppercase mb-1" style={{ color: '#A8948A' }}>
                 🌸 Asia Miles 進度
               </p>
-              <p className="text-sm font-medium" style={{ color: '#5C4A43' }}>
-                目標 {MILES_GOAL.toLocaleString()} 里
-              </p>
+
+              {/* 目標行：表示 or 編集 */}
+              {isEditingGoal ? (
+                <div className="flex items-center gap-2 mt-1">
+                  <input
+                    ref={goalInputRef}
+                    type="number"
+                    inputMode="numeric"
+                    value={goalInput}
+                    onChange={(e) => setGoalInput(e.target.value)}
+                    onKeyDown={handleGoalKeyDown}
+                    placeholder="輸入目標里數"
+                    className="w-32 text-sm bg-transparent outline-none pb-0.5 font-medium"
+                    style={{
+                      color: '#5C4A43',
+                      borderBottom: '1.5px solid #C4A482',
+                      caretColor: '#C4A482',
+                    }}
+                  />
+                  <button
+                    onClick={handleGoalSave}
+                    className="text-[10px] px-2.5 py-1 rounded-full font-semibold transition-all active:scale-90"
+                    style={{ background: '#C4A482', color: '#FFFDF9' }}
+                  >
+                    確認
+                  </button>
+                  <button
+                    onClick={() => setIsEditingGoal(false)}
+                    className="text-[10px] px-2.5 py-1 rounded-full transition-all active:scale-90"
+                    style={{ background: '#EFE9E1', color: '#9A7350' }}
+                  >
+                    取消
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  <p className="text-sm font-medium" style={{ color: '#5C4A43' }}>
+                    {hasGoal ? `目標 ${milesGoal.toLocaleString()} 里` : '未設定目標'}
+                  </p>
+                  {/* ✏️ 編集ボタン */}
+                  <button
+                    onClick={() => {
+                      setGoalInput(milesGoal > 0 ? String(milesGoal) : '');
+                      setIsEditingGoal(true);
+                    }}
+                    className="w-6 h-6 rounded-full flex items-center justify-center text-sm transition-all active:scale-90"
+                    style={{ background: '#EFE9E1', color: '#A8948A' }}
+                    title="修改里數目標"
+                    onMouseEnter={(e) => {
+                      (e.currentTarget as HTMLButtonElement).style.background = '#E0D4C6';
+                      (e.currentTarget as HTMLButtonElement).style.color = '#9A7350';
+                    }}
+                    onMouseLeave={(e) => {
+                      (e.currentTarget as HTMLButtonElement).style.background = '#EFE9E1';
+                      (e.currentTarget as HTMLButtonElement).style.color = '#A8948A';
+                    }}
+                  >
+                    ✏️
+                  </button>
+                </div>
+              )}
             </div>
-            <div className="text-right">
+
+            {/* 已賺取里數（大字体） */}
+            <div className="text-right shrink-0">
               <span className="text-3xl font-light" style={{ color: '#9A7350' }}>
                 {Math.floor(data?.totalMiles ?? 0).toLocaleString()}
               </span>
               <span className="text-xs ml-1" style={{ color: '#A8948A' }}>里</span>
             </div>
           </div>
-          <div className="h-2.5 w-full rounded-full overflow-hidden" style={{ background: '#EFE9E1' }}>
-            <div
-              className="h-full rounded-full transition-all duration-1000 ease-out"
-              style={{
-                width: `${milesProgress}%`,
-                background: 'linear-gradient(90deg, #9A7350, #C4A482)',
-              }}
-            />
-          </div>
-          <p className="text-xs text-right" style={{ color: '#A8948A' }}>
-            已達成 {milesProgress.toFixed(1)}%
-          </p>
+
+          {/* 進度條：目標が 0 の場合は非表示 */}
+          {hasGoal ? (
+            <>
+              <div className="h-2.5 w-full rounded-full overflow-hidden" style={{ background: '#EFE9E1' }}>
+                <div
+                  className="h-full rounded-full transition-all duration-1000 ease-out"
+                  style={{
+                    width: `${milesProgress}%`,
+                    background: 'linear-gradient(90deg, #9A7350, #C4A482)',
+                  }}
+                />
+              </div>
+              <p className="text-xs text-right" style={{ color: '#A8948A' }}>
+                已達成 {milesProgress.toFixed(1)}%
+              </p>
+            </>
+          ) : (
+            <p className="text-xs" style={{ color: '#CDB99F' }}>
+              點擊 ✏️ 設定里數目標，即可顯示進度條
+            </p>
+          )}
         </div>
 
-        {/* ── 支出分類圓餅圖（新機能）── */}
+        {/* ── 支出分類圓餅圖 ── */}
         {data && data.categoryBreakdown.length > 0 ? (
           <div
             className="rounded-3xl p-6 space-y-5"
@@ -397,7 +480,6 @@ export default function DashboardPage() {
               border: '1px solid #EFE9E1',
             }}
           >
-            {/* セクションヘッダー */}
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold" style={{ color: '#5C4A43' }}>
                 支出分類 🍜
@@ -410,13 +492,8 @@ export default function DashboardPage() {
               </span>
             </div>
 
-            {/* 円グラフ */}
-            <PieChart
-              slices={pieSlices}
-              total={data.totalSpentHKD}
-            />
+            <PieChart slices={pieSlices} total={data.totalSpentHKD} />
 
-            {/* 横バー（補足） */}
             <div className="space-y-2.5 pt-2" style={{ borderTop: '1px solid #EFE9E1' }}>
               <p className="text-[10px] tracking-widest uppercase" style={{ color: '#A8948A' }}>
                 金額明細

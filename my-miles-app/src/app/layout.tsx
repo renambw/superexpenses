@@ -9,7 +9,7 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',
-    title: 'Miles ☕',
+    title: '🐧記帳本🐧',
   },
 };
 
