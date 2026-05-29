@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { supabase } from '@/lib/supabase';
+import { createBrowserClient } from '@supabase/ssr';
 import { convertToHKD } from '@/lib/frankfurter';
 import { recommendCards } from '@/lib/milesEngine';
 import type { Category, CardName, CardRecommendation } from '@/types';
@@ -29,6 +29,7 @@ const CARD_BASE =
   'w-full p-4 rounded-3xl border text-left transition-all duration-200 active:scale-[0.97]';
 
 export default function HomePage() {
+  const supabase = createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
   const [amount, setAmount]           = useState('');
   const [currency, setCurrency]       = useState('HKD');
   const [category, setCategory]       = useState<Category>('飲食');
