@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { createBrowserClient } from '@supabase/ssr';
 import { convertToHKD } from '@/lib/frankfurter';
 import { recommendCards } from '@/lib/milesEngine';
-import type { Category, CardName, CardRecommendation } from '@/types';
+import type { Category, CardName, CardRecommendation, CreditCard } from '@/types';
 
 const CATEGORIES: { label: Category; emoji: string }[] = [
   { label: '飲食',    emoji: '🍜' },
@@ -28,6 +28,30 @@ const CASH_CARD_NAME = '現金';
 const CARD_BASE =
   'w-full p-4 rounded-3xl border text-left transition-all duration-200 active:scale-[0.97]';
 
+// 根據結單日計算本期開始日期
+function getCycleStart(statementDate: number): Date {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = today.getMonth();
+  const day = today.getDate();
+  let cycleStart: Date;
+  if (day >= statementDate) {
+    cycleStart = new Date(year, month, statementDate);
+  } else {
+    cycleStart = new Date(year, month - 1, statementDate);
+  }
+  cycleStart.setHours(0, 0, 0, 0);
+  return cycleStart;
+}
+
+// 信用卡月度上限資訊
+interface CardLimitInfo {
+  cardName: string;
+  userMonthlyLimit: number | null;
+  statementDate: number;
+  usedHKD: number;
+}
+
 export default function HomePage() {
   const supabase = createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
   const [amount, setAmount]           = useState('');
@@ -47,6 +71,61 @@ export default function HomePage() {
   const [saving, setSaving]       = useState(false);
   const [savedCard, setSavedCard] = useState<CardName | null>(null);
   const [error, setError]         = useState<string | null>(null);
+
+  // 信用卡月度上限資訊
+  const [cardLimitInfos, setCardLimitInfos] = useState<CardLimitInfo[]>([]);
+
+  // 載入所有信用卡的月度上限和本期使用量
+  useEffect(() => {
+    const loadCardLimits = async () => {
+      // 只取有設定月度上限的卡
+      const { data: cardData, error: cardError } = await supabase
+        .from('credit_cards')
+        .select('id, name, statement_date, user_monthly_limit')
+        .not('user_monthly_limit', 'is', null);
+
+      if (cardError || !cardData || cardData.length === 0) return;
+
+      const cards = cardData as Pick<CreditCard, 'id' | 'name' | 'statement_date' | 'user_monthly_limit'>[];
+
+      // 找最早的本期開始日期
+      const earliestStart = cards.reduce((earliest, card) => {
+        const start = getCycleStart(card.statement_date ?? 1);
+        return start < earliest ? start : earliest;
+      }, new Date());
+
+      const { data: txData, error: txError } = await supabase
+        .from('transactions')
+        .select('card_used, amount_hkd')
+        .gte('created_at', earliestStart.toISOString())
+        .neq('card_used', '現金');
+
+      if (txError) return;
+
+      const allTx = txData as { card_used: string; amount_hkd: number }[];
+
+      const infos: CardLimitInfo[] = cards.map((card) => {
+        const statDate = card.statement_date ?? 1;
+        const cycleStart = getCycleStart(statDate);
+        const cycleEnd = new Date();
+
+        const usedHKD = allTx
+          .filter((tx) => tx.card_used === card.name)
+          .reduce((sum, tx) => sum + Number(tx.amount_hkd), 0);
+
+        return {
+          cardName: card.name,
+          userMonthlyLimit: card.user_monthly_limit,
+          statementDate: statDate,
+          usedHKD,
+        };
+      });
+
+      setCardLimitInfos(infos);
+    };
+
+    loadCardLimits();
+  }, []);
 
   // 金額・幣種変更時に匯率を取得
   useEffect(() => {
@@ -68,7 +147,6 @@ export default function HomePage() {
   // HKD・分類・現金モード変更時に推薦を計算
   useEffect(() => {
     if (hkdAmount <= 0) { setRecommendations([]); return; }
-    // 現金モードの場合は推薦不要
     if (useCash) { setRecommendations([]); return; }
     const run = async () => {
       setRecLoading(true);
@@ -84,6 +162,22 @@ export default function HomePage() {
     run();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hkdAmount, category, useCash]);
+
+  // 取得某張卡的月度上限警告訊息
+  const getMonthlyLimitWarning = useCallback((cardName: string, thisAmountHKD: number): string | null => {
+    const info = cardLimitInfos.find((c) => c.cardName === cardName);
+    if (!info || info.userMonthlyLimit === null) return null;
+
+    const totalAfter = info.usedHKD + thisAmountHKD;
+    const remaining = info.userMonthlyLimit - totalAfter;
+
+    if (remaining < 0) {
+      return `🚨 已超出本月簽帳上限 HKD ${Math.abs(remaining).toLocaleString('zh-HK', { maximumFractionDigits: 0 })}`;
+    } else if (remaining < info.userMonthlyLimit * 0.2) {
+      return `⚠️ 還有 HKD ${remaining.toLocaleString('zh-HK', { maximumFractionDigits: 0 })} 到達本月簽帳上限`;
+    }
+    return null;
+  }, [cardLimitInfos]);
 
   // 現金で保存
   const handleSaveCash = useCallback(async () => {
@@ -127,6 +221,12 @@ export default function HomePage() {
       setError('儲存失敗：' + dbErr.message);
     } else {
       setSavedCard(rec.cardName);
+      // 更新本地的 cardLimitInfos（即時反映）
+      setCardLimitInfos((prev) => prev.map((info) =>
+        info.cardName === rec.cardName
+          ? { ...info, usedHKD: info.usedHKD + hkdAmount }
+          : info
+      ));
       setTimeout(() => {
         setAmount(''); setDescription('');
         setSavedCard(null); setRecommendations([]); setHkdAmount(0);
@@ -379,6 +479,8 @@ export default function HomePage() {
               recommendations.map((rec, index) => {
                 const isSaved = savedCard === rec.cardName;
                 const isBest  = index === 0;
+                // 計算月度上限警告
+                const limitWarning = hkdAmount > 0 ? getMonthlyLimitWarning(rec.cardName, hkdAmount) : null;
 
                 return (
                   <button
@@ -443,7 +545,6 @@ export default function HomePage() {
                               ⚠ 未達最低消費
                             </span>
                           )}
-                          {/* 上限到達バッジ（最低消費未達時は表示しない） */}
                         </div>
                         <p
                           className="text-xs"
@@ -470,6 +571,19 @@ export default function HomePage() {
                             style={{ color: isBest && !isSaved ? '#FDECE4' : '#C07A4A' }}
                           >
                             {rec.minSpendNote}
+                          </p>
+                        )}
+                        {/* ── 月度上限警告（新增）── */}
+                        {limitWarning && !isSaved && (
+                          <p
+                            className="text-[10px] leading-tight font-medium mt-0.5"
+                            style={{
+                              color: isBest && !isSaved
+                                ? (limitWarning.startsWith('🚨') ? '#FFB3B3' : '#FFD9B3')
+                                : (limitWarning.startsWith('🚨') ? '#C47A7A' : '#D4956A'),
+                            }}
+                          >
+                            {limitWarning}
                           </p>
                         )}
                       </div>
