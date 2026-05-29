@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
+import { supabase } from '@/lib/supabase'
 
 type Mode = 'login' | 'register' | 'forgot'
 
@@ -15,7 +15,6 @@ export default function LoginPage() {
   const [error, setError] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
   const router = useRouter()
-  const supabase = createClientComponentClient()
 
   // 奶茶主題顏色
   const milkTeaBrown = '#C4A482'
@@ -120,7 +119,7 @@ export default function LoginPage() {
     >
       {/* 企鵝 Logo */}
       <div className="text-center mb-8">
-        <div className="text-5xl mb-3" style={{ animation: 'bounce 2s infinite' }}>🐧</div>
+        <div className="text-5xl mb-3 animate-bounce" style={{ animationDuration: '2s' }}>🐧</div>
         <h1 className="text-2xl font-light tracking-widest" style={{ color: textDark }}>
           記帳本
         </h1>
@@ -183,6 +182,7 @@ export default function LoginPage() {
                   color: '#FFFDF9',
                   boxShadow: `0 4px 16px rgba(196,164,130,0.35)`,
                   opacity: isLoading ? 0.7 : 1,
+                  cursor: isLoading ? 'not-allowed' : 'pointer',
                 }}
               >
                 {isLoading ? '發送中…' : '📧 發送重設郵件'}
@@ -191,6 +191,7 @@ export default function LoginPage() {
 
             <p className="text-center text-xs mt-5" style={{ color: textMid }}>
               <button
+                type="button"
                 onClick={() => { setMode('login'); setError(''); setSuccessMsg('') }}
                 className="font-medium underline underline-offset-2"
                 style={{ color: milkTeaBrown }}
