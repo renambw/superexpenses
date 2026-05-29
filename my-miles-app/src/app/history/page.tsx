@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { createBrowserClient } from '@supabase/ssr';
-import type { Transaction } from '@/types';
+import type { Transaction, CreditCard } from '@/types';
 
 const CATEGORY_META: Record<string, { emoji: string; bg: string; color: string }> = {
   '飲食':     { emoji: '🍜', bg: '#FDF3E8', color: '#C07A4A' },
@@ -17,23 +17,132 @@ const CATEGORY_META: Record<string, { emoji: string; bg: string; color: string }
   '雜項':     { emoji: '📋', bg: '#EFE9E1', color: '#A8948A' },
 };
 
+// 根據結單日計算本期開始日期
+function getCycleStart(statementDate: number): Date {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = today.getMonth(); // 0-indexed
+  const day = today.getDate();
+
+  let cycleStart: Date;
+  if (day >= statementDate) {
+    // 本月結單日已過，本期從本月結單日開始
+    cycleStart = new Date(year, month, statementDate);
+  } else {
+    // 本月結單日未到，本期從上月結單日開始
+    cycleStart = new Date(year, month - 1, statementDate);
+  }
+  cycleStart.setHours(0, 0, 0, 0);
+  return cycleStart;
+}
+
+// 根據結單日計算本期結束日期（下一個結單日前一天）
+function getCycleEnd(statementDate: number): Date {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = today.getMonth();
+  const day = today.getDate();
+
+  let cycleEnd: Date;
+  if (day >= statementDate) {
+    // 本月結單日已過，本期到下月結單日前一天
+    cycleEnd = new Date(year, month + 1, statementDate - 1);
+  } else {
+    // 本月結單日未到，本期到本月結單日前一天
+    cycleEnd = new Date(year, month, statementDate - 1);
+  }
+  cycleEnd.setHours(23, 59, 59, 999);
+  return cycleEnd;
+}
+
+// 格式化日期為 M月D號
+function formatDate(date: Date): string {
+  return `${date.getMonth() + 1}月${date.getDate()}號`;
+}
+
+interface CardCycleSummary {
+  cardName: string;
+  statementDate: number;
+  cycleStart: Date;
+  cycleEnd: Date;
+  totalHKD: number;
+  txCount: number;
+  userMonthlyLimit: number | null;
+}
+
 export default function HistoryPage() {
   const supabase = createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading]           = useState(true);
   const [deleting, setDeleting]         = useState<string | null>(null);
+  const [cycleSummaries, setCycleSummaries] = useState<CardCycleSummary[]>([]);
 
-  const fetchTransactions = async () => {
-    const { data, error } = await supabase
+  const fetchData = async () => {
+    // 取得最近 50 筆交易
+    const { data: txData, error: txError } = await supabase
       .from('transactions')
       .select('*')
       .order('created_at', { ascending: false })
       .limit(50);
-    if (!error && data) setTransactions(data as Transaction[]);
+    if (!txError && txData) setTransactions(txData as Transaction[]);
+
+    // 取得所有信用卡（含結單日和月度上限）
+    const { data: cardData, error: cardError } = await supabase
+      .from('credit_cards')
+      .select('id, name, statement_date, user_monthly_limit')
+      .order('name');
+
+    if (!cardError && cardData && cardData.length > 0) {
+      // 計算每張卡的本期開始日期
+      const cards = cardData as Pick<CreditCard, 'id' | 'name' | 'statement_date' | 'user_monthly_limit'>[];
+
+      // 找出最早的本期開始日期，一次性查詢所有交易
+      const earliestStart = cards.reduce((earliest, card) => {
+        const start = getCycleStart(card.statement_date ?? 1);
+        return start < earliest ? start : earliest;
+      }, new Date());
+
+      const { data: cycleData, error: cycleError } = await supabase
+        .from('transactions')
+        .select('*')
+        .gte('created_at', earliestStart.toISOString())
+        .neq('card_used', '現金');
+
+      if (!cycleError && cycleData) {
+        const allTx = cycleData as Transaction[];
+
+        const summaries: CardCycleSummary[] = cards.map((card) => {
+          const statDate = card.statement_date ?? 1;
+          const cycleStart = getCycleStart(statDate);
+          const cycleEnd = getCycleEnd(statDate);
+
+          // 篩選本期內使用此卡的交易
+          const cardTx = allTx.filter((tx) => {
+            if (tx.card_used !== card.name) return false;
+            const txDate = new Date(tx.created_at);
+            return txDate >= cycleStart && txDate <= cycleEnd;
+          });
+
+          return {
+            cardName: card.name,
+            statementDate: statDate,
+            cycleStart,
+            cycleEnd,
+            totalHKD: cardTx.reduce((sum, tx) => sum + Number(tx.amount_hkd), 0),
+            txCount: cardTx.length,
+            userMonthlyLimit: card.user_monthly_limit,
+          };
+        });
+
+        // 只顯示有使用記錄的卡，或所有卡（按字母排序）
+        setCycleSummaries(summaries);
+      }
+    }
+
     setLoading(false);
   };
 
-  useEffect(() => { fetchTransactions(); }, []);
+  useEffect(() => { fetchData(); }, []);
 
   const handleDelete = async (id: string) => {
     setDeleting(id);
@@ -88,6 +197,101 @@ export default function HistoryPage() {
           </div>
         </header>
 
+        {/* ── 本期信用卡消費統計 ── */}
+        {cycleSummaries.length > 0 && (
+          <section>
+            <h2 className="text-[10px] tracking-widest uppercase px-1 mb-3" style={{ color: '#A8948A' }}>
+              📅 本期信用卡消費（結單日計算）
+            </h2>
+            <div
+              className="rounded-3xl overflow-hidden"
+              style={{
+                background: '#FFFDF9',
+                boxShadow: '0 4px 16px rgba(92,74,67,0.08)',
+                border: '1px solid #EFE9E1',
+              }}
+            >
+              {cycleSummaries.map((summary, i) => {
+                const usagePercent = summary.userMonthlyLimit
+                  ? Math.min((summary.totalHKD / summary.userMonthlyLimit) * 100, 100)
+                  : null;
+                const remaining = summary.userMonthlyLimit
+                  ? summary.userMonthlyLimit - summary.totalHKD
+                  : null;
+                const isOverLimit = remaining !== null && remaining < 0;
+                const isNearLimit = remaining !== null && remaining >= 0 && remaining < (summary.userMonthlyLimit! * 0.2);
+
+                return (
+                  <div
+                    key={summary.cardName}
+                    className="px-4 py-3.5"
+                    style={{
+                      borderBottom: i < cycleSummaries.length - 1 ? '1px solid #F5EDE3' : 'none',
+                    }}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold" style={{ color: '#5C4A43' }}>
+                          {summary.cardName}
+                        </p>
+                        <p className="text-[10px] mt-0.5" style={{ color: '#A8948A' }}>
+                          📅 {formatDate(summary.cycleStart)} – {formatDate(summary.cycleEnd)}
+                          （{summary.statementDate}號結單）
+                        </p>
+                        {/* 進度條（有設月度上限時顯示） */}
+                        {summary.userMonthlyLimit !== null && usagePercent !== null && (
+                          <div className="mt-2">
+                            <div
+                              className="w-full h-1.5 rounded-full overflow-hidden"
+                              style={{ background: '#EFE9E1' }}
+                            >
+                              <div
+                                className="h-full rounded-full transition-all"
+                                style={{
+                                  width: `${usagePercent}%`,
+                                  background: isOverLimit
+                                    ? '#C47A7A'
+                                    : isNearLimit
+                                    ? '#D4956A'
+                                    : '#C4A482',
+                                }}
+                              />
+                            </div>
+                            <p className="text-[10px] mt-1" style={{
+                              color: isOverLimit ? '#C47A7A' : isNearLimit ? '#D4956A' : '#A8948A'
+                            }}>
+                              {isOverLimit
+                                ? `🚨 已超出月限 HKD ${Math.abs(remaining!).toLocaleString('zh-HK', { maximumFractionDigits: 0 })}`
+                                : isNearLimit
+                                ? `⚠️ 還有 HKD ${remaining!.toLocaleString('zh-HK', { maximumFractionDigits: 0 })} 到達月限`
+                                : `月限餘額 HKD ${remaining!.toLocaleString('zh-HK', { maximumFractionDigits: 0 })}`
+                              }
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-base font-semibold" style={{ color: '#9A7350' }}>
+                          HKD {summary.totalHKD.toLocaleString('zh-HK', { maximumFractionDigits: 0 })}
+                        </p>
+                        <p className="text-[10px]" style={{ color: '#CDB99F' }}>
+                          {summary.txCount} 筆
+                        </p>
+                        {summary.userMonthlyLimit !== null && (
+                          <p className="text-[10px]" style={{ color: '#CDB99F' }}>
+                            / HKD {summary.userMonthlyLimit.toLocaleString('zh-HK', { maximumFractionDigits: 0 })}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {/* ── 交易記錄 ── */}
         {transactions.length === 0 ? (
           <div
             className="rounded-3xl p-12 text-center"
