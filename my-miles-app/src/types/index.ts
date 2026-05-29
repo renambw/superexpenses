@@ -51,6 +51,12 @@ export interface CreditCard {
   category_quarterly_caps: Partial<Record<Category, number>> | null;
   // 上限超過後の降級利率（全上限共通）
   capped_base_rate: number | null;
+
+  // ── 結單日 & 用戶月度簽帳上限（新增） ──
+  // 每月結單日（1-31），用於計算本期消費週期
+  statement_date: number;
+  // 用戶自訂月度簽帳警告上限（可選，如 HKD 20000）
+  user_monthly_limit: number | null;
 }
 
 // ============================================================
@@ -76,6 +82,8 @@ export interface CardRecommendation {
   isOverseasBonus: boolean;
   isBelowMinSpend: boolean;
   minSpendNote?: string;
+  // 月度上限警告（新增）
+  monthlyLimitWarning?: string | null;
 }
 
 export interface Transaction {
@@ -114,4 +122,15 @@ export interface DetailedUsage {
   local_hkd: number;
   overseas_hkd: number;
   category_hkd: Partial<Record<Category, number>>;
+}
+
+// ── 結單週期內的信用卡消費統計（新增） ──
+export interface CardCycleUsage {
+  card_name: CardName;
+  statement_date: number;
+  cycle_start: Date;
+  cycle_end: Date;
+  total_hkd: number;
+  transaction_count: number;
+  user_monthly_limit: number | null;
 }
