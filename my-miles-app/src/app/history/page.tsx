@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { createBrowserClient } from '@supabase/ssr';
 import type { Transaction } from '@/types';
 
 const CATEGORY_META: Record<string, { emoji: string; bg: string; color: string }> = {
@@ -18,6 +18,7 @@ const CATEGORY_META: Record<string, { emoji: string; bg: string; color: string }
 };
 
 export default function HistoryPage() {
+  const supabase = createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading]           = useState(true);
   const [deleting, setDeleting]         = useState<string | null>(null);
