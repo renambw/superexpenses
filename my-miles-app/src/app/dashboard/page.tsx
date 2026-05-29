@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { supabase } from '@/lib/supabase';
+import { createBrowserClient } from '@supabase/ssr';
 import type { Category, CardName } from '@/types';
 
 // ============================================================
@@ -208,6 +208,7 @@ function PieChart({ slices, total }: { slices: PieSlice[]; total: number }) {
 // Dashboard ページ本体
 // ============================================================
 export default function DashboardPage() {
+  const supabase = createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
   const [data, setData]       = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
 
