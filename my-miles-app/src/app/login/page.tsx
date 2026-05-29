@@ -15,9 +15,6 @@ export default function LoginPage() {
   const [error, setError] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
   const router = useRouter()
-  const supabase = createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
-
-  // 使用 @supabase/ssr 的 browser client（與 middleware 一致，使用 Cookie 儲存 session）
   const supabase = createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -354,10 +351,6 @@ export default function LoginPage() {
           </>
         )}
       </div>
-
-      <p className="text-xs mt-6" style={{ color: 'rgba(196,181,173,1)' }}>
-        🐧 記帳本 · 您的資料安全加密儲存
-      </p>
     </div>
   )
 }
