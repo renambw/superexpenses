@@ -233,30 +233,42 @@ function calculateMilesForCard(
   if (card.min_spend_hkd !== null) {
     const applyTo = card.min_spend_apply_to ?? 'all';
 
-    // 適用範囲に応じた累積金額を計算
-    let accumulatedUsage: number;
-    switch (applyTo) {
-      case 'local':
-        accumulatedUsage = monthly.local;
-        break;
-      case 'overseas':
-        accumulatedUsage = monthly.overseas;
-        break;
-      case 'category':
-        accumulatedUsage = monthly.category[category as Category] ?? 0;
-        break;
-      case 'all':
-      default:
-        accumulatedUsage = monthly.local + monthly.overseas;
-        break;
-    }
+    // 「適用範囲」と「現在の取引種別」が一致しない場合は最低消費チェックをスキップ
+    // 例： apply_to='overseas' なのに HKD 取引→ 最低消費は海外消費にのみ適用されるので警告不要
+    // 例： apply_to='local' なのに海外取引→ 同様にスキップ
+    const shouldSkipMinSpendCheck =
+      (applyTo === 'overseas' && !isOverseas) ||
+      (applyTo === 'local'   &&  isOverseas);
 
-    const projectedTotal = accumulatedUsage + amountHKD;
-    if (projectedTotal < card.min_spend_hkd) {
-      isBelowMinSpend = true;
-      // 差額 = 最低消費 - 「現在の累積 + 今回の金額」
-      const shortfall = card.min_spend_hkd - projectedTotal;
-      minSpendNote = `未達最低要求 HKD ${card.min_spend_hkd.toLocaleString()}，還欠 HKD ${Math.ceil(shortfall).toLocaleString()} 才達到要求`;
+    if (!shouldSkipMinSpendCheck) {
+      // 適用範囲に応じた累積金額を計算
+      let accumulatedUsage: number;
+      switch (applyTo) {
+        case 'local':
+          accumulatedUsage = monthly.local;
+          break;
+        case 'overseas':
+          accumulatedUsage = monthly.overseas;
+          break;
+        case 'category':
+          accumulatedUsage = monthly.category[category as Category] ?? 0;
+          break;
+        case 'all':
+        default:
+          accumulatedUsage = monthly.local + monthly.overseas;
+          break;
+      }
+
+      const projectedTotal = accumulatedUsage + amountHKD;
+      if (projectedTotal < card.min_spend_hkd) {
+        isBelowMinSpend = true;
+        // 差額 = 最低消費 - 「現在の累積 + 今回の金額」
+        const shortfall = card.min_spend_hkd - projectedTotal;
+        const scopeLabel = applyTo === 'overseas' ? '海外簽費' :
+                           applyTo === 'local'    ? '本地簽費' :
+                           applyTo === 'category' ? `${category}簽費` : '簽費總額';
+        minSpendNote = `未達最低要求 HKD ${card.min_spend_hkd.toLocaleString()}（${scopeLabel}），還欠 HKD ${Math.ceil(shortfall).toLocaleString()} 才達到要求`;
+      }
     }
   }
 

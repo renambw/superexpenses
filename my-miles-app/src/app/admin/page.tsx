@@ -13,7 +13,7 @@ const ALL_CATEGORIES: Category[] = [
 ];
 
 const CATEGORY_EMOJI: Record<Category, string> = {
-  '飲食': '🍜', '購物': '🛍', '酒店': '🏨', '旅遊': '✈️', '交通': '🚇',
+  '飲食': '🍜', '購物': '🛘', '酒店': '🏨', '旅遊': '✈️', '交通': '🚇',
   '娛樂': '🎦', '通訊': '📱', '手信/禮物': '🎁', '醫療/保險': '💊', '雜項': '📋',
 };
 
@@ -656,6 +656,8 @@ export default function AdminPage() {
   const [isSaving, setIsSaving]     = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [toast, setToast]           = useState<{ msg: string; type: 'ok' | 'err' } | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [isAuthorized, setIsAuthorized] = useState(false);
 
   const currentQ = getCurrentQuarter();
 
@@ -671,7 +673,43 @@ export default function AdminPage() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { loadCards(); }, [loadCards]);
+  // Admin 認証チェック：ログイン済みユーザーのみアクセス可能
+  // より厳格にする場合は ADMIN_EMAILS に特定のメールアドレスを追加してください
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user) {
+        // 特定の Admin メールアドレスのみ許可する場合（オプション）：
+        // const ADMIN_EMAILS = ['admin@example.com'];
+        // setIsAuthorized(ADMIN_EMAILS.includes(user.email ?? ''));
+        setIsAuthorized(true); // 現在はログイン済みユーザー全員を Admin として扱う
+      } else {
+        setIsAuthorized(false);
+      }
+      setAuthChecked(true);
+    });
+  }, []);
+
+  useEffect(() => { if (isAuthorized) loadCards(); }, [loadCards, isAuthorized]);
+
+  // 認証チェック中
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: '#EFE9E1' }}>
+        <div className="text-4xl animate-bounce">🐧</div>
+      </div>
+    );
+  }
+
+  // 未認証
+  if (!isAuthorized) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center px-5" style={{ background: '#EFE9E1' }}>
+        <div className="text-5xl mb-4">🔒</div>
+        <h2 className="text-lg font-semibold mb-2" style={{ color: '#5C4A43' }}>需要登入</h2>
+        <p className="text-sm text-center" style={{ color: '#A8948A' }}>請先登入才能進入管理頁面</p>
+      </div>
+    );
+  }
 
   const handleSave = async (data: Omit<CreditCard, 'id'> & { id?: string }) => {
     setIsSaving(true);
