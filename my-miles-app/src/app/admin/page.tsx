@@ -43,6 +43,9 @@ const EMPTY_FORM: Omit<CreditCard, 'id'> = {
   category_monthly_caps: null,
   category_quarterly_caps: null,
   capped_base_rate: null,
+  // 新增欄位
+  statement_date: 1,
+  user_monthly_limit: null,
 };
 
 // ============================================================
@@ -289,6 +292,7 @@ function CardForm({ initial, onSave, onCancel, isSaving }: {
   const [hasCatQuarterly,       setHasCatQuarterly]       = useState(
     initial.category_quarterly_caps !== null && Object.keys(initial.category_quarterly_caps ?? {}).length > 0
   );
+  const [hasUserMonthlyLimit,   setHasUserMonthlyLimit]   = useState(initial.user_monthly_limit !== null);
 
   const set = <K extends keyof typeof form>(key: K, val: (typeof form)[K]) =>
     setForm((prev) => ({ ...prev, [key]: val }));
@@ -307,6 +311,7 @@ function CardForm({ initial, onSave, onCancel, isSaving }: {
       overseas_quarterly_cap:  hasOverseasQuarterly ? form.overseas_quarterly_cap : null,
       category_monthly_caps:   hasCatMonthly ? form.category_monthly_caps : null,
       category_quarterly_caps: hasCatQuarterly ? form.category_quarterly_caps : null,
+      user_monthly_limit:      hasUserMonthlyLimit ? form.user_monthly_limit : null,
       // 旧来フィールドはクリア（独立上限に移行）
       monthly_cap_limit: null, monthly_cap_rate: null, monthly_cap_apply_to: null,
       quarterly_cap_limit: null, quarterly_cap_rate: null, quarterly_cap_apply_to: null,
@@ -375,7 +380,6 @@ function CardForm({ initial, onSave, onCancel, isSaving }: {
                 unit="HKD 以上才享優惠"
                 min={1}
               />
-              {/* 適用範囲セレクトボックス */}
               <div>
                 <label className="block text-[10px] tracking-widest uppercase mb-1.5" style={{ color: '#A8948A' }}>
                   最低消費計算範圍
@@ -423,6 +427,61 @@ function CardForm({ initial, onSave, onCancel, isSaving }: {
                 onChange={(v) => set('capped_base_rate', v)}
                 unit="HKD / 里"
                 hint="超過任何上限後套用此利率（預設使用基本利率）"
+              />
+            </div>
+          )}
+        </div>
+
+        {/* ── 結單日設定（新增）── */}
+        <div>
+          <label className="block text-[10px] tracking-widest uppercase mb-1.5" style={{ color: '#A8948A' }}>
+            📅 每月結單日（Cut-off Day）
+          </label>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={31}
+              value={form.statement_date ?? 1}
+              onChange={(e) => {
+                const v = parseInt(e.target.value);
+                if (!isNaN(v) && v >= 1 && v <= 31) set('statement_date', v);
+              }}
+              className="w-20 text-sm outline-none pb-0.5 bg-transparent text-center"
+              style={{
+                color: '#5C4A43',
+                borderBottom: '1.5px solid #E0D4C6',
+                caretColor: '#C4A482',
+              }}
+              onFocus={(e) => (e.target.style.borderBottomColor = '#C4A482')}
+              onBlur={(e) => (e.target.style.borderBottomColor = '#E0D4C6')}
+            />
+            <span className="text-sm" style={{ color: '#A8948A' }}>號</span>
+          </div>
+          <p className="text-[10px] mt-1" style={{ color: '#CDB99F' }}>
+            每月此日為結單日，系統會計算上一個結單日至今的消費（AE: 23號 / HSBC: 8號 / BOC: 15號 / SC: 11號）
+          </p>
+        </div>
+
+        {/* ── 月度簽帳警告上限（新增，可選）── */}
+        <div>
+          <Toggle
+            checked={hasUserMonthlyLimit} label="設定月度簽帳警告上限（可選）"
+            onChange={(v) => {
+              setHasUserMonthlyLimit(v);
+              if (v && form.user_monthly_limit === null) set('user_monthly_limit', 20000);
+            }}
+          />
+          {hasUserMonthlyLimit && (
+            <div className="pl-11 mt-1">
+              <NumberField
+                label="月度簽帳警告上限（HKD）"
+                value={form.user_monthly_limit}
+                onChange={(v) => set('user_monthly_limit', v)}
+                unit="HKD"
+                min={1}
+                hint="接近此上限時，記帳頁面會顯示警告提示（如 HKD 20,000）"
               />
             </div>
           )}
@@ -630,6 +689,10 @@ function CardBadges({ card }: { card: CreditCard }) {
     badges.push({ label: `分類季上限 ×${Object.keys(card.category_quarterly_caps).length}`, bg: '#FDF3E8', color: '#A05A2A' });
   if (card.capped_base_rate !== null)
     badges.push({ label: `降級 HKD ${card.capped_base_rate}/里`, bg: '#EFE9E1', color: '#A8948A' });
+  // 新增：結單日和月度上限 badge
+  badges.push({ label: `📅 ${card.statement_date ?? 1}號結單`, bg: '#EEF2F8', color: '#7D8FAB' });
+  if (card.user_monthly_limit !== null)
+    badges.push({ label: `⚠️ 月限 HKD ${card.user_monthly_limit.toLocaleString()}`, bg: '#FDF3E8', color: '#C07A4A' });
 
   return (
     <div className="flex flex-wrap gap-1.5 mt-2">
@@ -674,15 +737,10 @@ export default function AdminPage() {
     setLoading(false);
   }, []);
 
-  // Admin 認証チェック：ログイン済みユーザーのみアクセス可能
-  // より厳格にする場合は ADMIN_EMAILS に特定のメールアドレスを追加してください
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (user) {
-        // 特定の Admin メールアドレスのみ許可する場合（オプション）：
-        // const ADMIN_EMAILS = ['admin@example.com'];
-        // setIsAuthorized(ADMIN_EMAILS.includes(user.email ?? ''));
-        setIsAuthorized(true); // 現在はログイン済みユーザー全員を Admin として扱う
+        setIsAuthorized(true);
       } else {
         setIsAuthorized(false);
       }
@@ -692,7 +750,6 @@ export default function AdminPage() {
 
   useEffect(() => { if (isAuthorized) loadCards(); }, [loadCards, isAuthorized]);
 
-  // 認証チェック中
   if (!authChecked) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: '#EFE9E1' }}>
@@ -701,7 +758,6 @@ export default function AdminPage() {
     );
   }
 
-  // 未認証
   if (!isAuthorized) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center px-5" style={{ background: '#EFE9E1' }}>
