@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { supabase } from '@/lib/supabase';
+import { createBrowserClient } from '@supabase/ssr';
 import { invalidateCardRulesCache, getCurrentQuarter } from '@/lib/milesEngine';
 import type { CreditCard, Category } from '@/types';
 
@@ -650,6 +650,7 @@ function CardBadges({ card }: { card: CreditCard }) {
 // メインの Admin ページ
 // ============================================================
 export default function AdminPage() {
+  const supabase = createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
   const [cards, setCards]           = useState<CreditCard[]>([]);
   const [loading, setLoading]       = useState(true);
   const [editingId, setEditingId]   = useState<string | 'new' | null>(null);
