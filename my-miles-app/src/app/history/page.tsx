@@ -76,6 +76,7 @@ export default function HistoryPage() {
   const [loading, setLoading]           = useState(true);
   const [deleting, setDeleting]         = useState<string | null>(null);
   const [cycleSummaries, setCycleSummaries] = useState<CardCycleSummary[]>([]);
+  const [cycleExpanded, setCycleExpanded] = useState(false);
 
   const fetchData = async () => {
     // 取得最近 50 筆交易
@@ -200,9 +201,25 @@ export default function HistoryPage() {
         {/* ── 本期信用卡消費統計 ── */}
         {cycleSummaries.length > 0 && (
           <section>
-            <h2 className="text-[10px] tracking-widest uppercase px-1 mb-3" style={{ color: '#A8948A' }}>
-              📅 本期信用卡消費（結單日計算）
-            </h2>
+            <button
+              onClick={() => setCycleExpanded((v) => !v)}
+              className="flex items-center gap-2 px-1 mb-3 w-full text-left"
+            >
+              <span className="text-[10px] tracking-widest uppercase" style={{ color: '#A8948A' }}>
+                📅 本期信用卡消費（結單日計算）
+              </span>
+              <span
+                className="ml-auto text-xs transition-transform duration-200"
+                style={{
+                  color: '#A8948A',
+                  display: 'inline-block',
+                  transform: cycleExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                }}
+              >
+                ▼
+              </span>
+            </button>
+            {cycleExpanded && (
             <div
               className="rounded-3xl overflow-hidden"
               style={{
@@ -288,6 +305,7 @@ export default function HistoryPage() {
                 );
               })}
             </div>
+            )}
           </section>
         )}
 
