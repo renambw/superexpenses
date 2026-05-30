@@ -273,10 +273,7 @@ export default function HomePage() {
     setError(null);
 
     try {
-      // 動態載入 Tesseract.js（只在需要時才載入，節省初始載入時間）
-      const Tesseract = (await import('tesseract.js')).default;
-
-      // 壓縮圖片（提升識別速度）
+      // 用 Canvas API 壓縮圖片（瀏覽器內建，唔需要任何套件）
       const compressedDataUrl = await new Promise<string>((resolve) => {
         const img = new Image();
         img.onload = () => {
@@ -301,9 +298,19 @@ export default function HomePage() {
         img.src = URL.createObjectURL(file);
       });
 
-      // 用 Tesseract 識別文字（英文 + 數字，速度快）
-      const result = await Tesseract.recognize(compressedDataUrl, 'eng', {
-        logger: () => {}, // 靜默模式
+      // 動態從 CDN 載入 Tesseract.js（唔需要安裝套件）
+      await new Promise<void>((resolve, reject) => {
+        if ((window as any).Tesseract) { resolve(); return; }
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error('Failed to load Tesseract.js'));
+        document.head.appendChild(script);
+      });
+
+      const TesseractLib = (window as any).Tesseract;
+      const result = await TesseractLib.recognize(compressedDataUrl, 'eng', {
+        logger: () => {},
       });
 
       const recognizedText = result.data.text;
