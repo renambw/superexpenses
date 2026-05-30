@@ -57,7 +57,7 @@ function extractAmountFromText(text: string): { amount: string; currency: string
   // 幣種對應表
   const currencyMap: Record<string, string> = {
     'HKD': 'HKD', 'HK$': 'HKD', '港幣': 'HKD', '港元': 'HKD',
-    'JPY': 'JPY', 'JP¥': 'JPY', '¥': 'JPY', '円': 'JPY', '¥': 'JPY',
+    'JPY': 'JPY', 'JP¥': 'JPY', '¥': 'JPY', '円': 'JPY',
     'USD': 'USD', 'US$': 'USD', '$': 'USD',
     'EUR': 'EUR', '€': 'EUR',
     'GBP': 'GBP', '£': 'GBP',
