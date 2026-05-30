@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { createBrowserClient } from '@supabase/ssr';
 import { convertToHKD } from '@/lib/frankfurter';
 import { recommendCards } from '@/lib/milesEngine';
@@ -52,6 +52,89 @@ interface CardLimitInfo {
   usedHKD: number;
 }
 
+// ── OCR：從圖片文字中提取金額和幣種 ──────────────────────────
+function extractAmountFromText(text: string): { amount: string; currency: string } | null {
+  // 幣種對應表
+  const currencyMap: Record<string, string> = {
+    'HKD': 'HKD', 'HK$': 'HKD', '港幣': 'HKD', '港元': 'HKD',
+    'JPY': 'JPY', 'JP¥': 'JPY', '¥': 'JPY', '円': 'JPY', '¥': 'JPY',
+    'USD': 'USD', 'US$': 'USD', '$': 'USD',
+    'EUR': 'EUR', '€': 'EUR',
+    'GBP': 'GBP', '£': 'GBP',
+    'CNY': 'CNY', 'RMB': 'CNY', '人民幣': 'CNY',
+    'TWD': 'TWD', 'NT$': 'TWD',
+    'AUD': 'AUD', 'AU$': 'AUD',
+    'SGD': 'SGD', 'SG$': 'SGD',
+  };
+
+  // 清理文字（移除多餘空格和換行）
+  const cleanText = text.replace(/\s+/g, ' ').trim();
+
+  // 嘗試匹配各種收據格式的金額
+  // 格式1: "Total: HKD 123.45" 或 "TOTAL HKD123.45"
+  // 格式2: "HK$ 123.45" 或 "¥1,234"
+  // 格式3: "合計 ¥1,234" 或 "Total ¥1,234"
+  // 格式4: "123.45 HKD"
+
+  // 優先尋找 Total/合計/小計 後面的金額
+  const totalPatterns = [
+    /(?:total|合計|小計|お会計|お支払い|amount due|grand total|subtotal)[:\s]*([A-Z]{3}|HK\$|JP¥|US\$|NT\$|AU\$|SG\$|¥|€|£|\$)?\s*([\d,]+\.?\d*)/gi,
+    /([A-Z]{3}|HK\$|JP¥|US\$|NT\$|AU\$|SG\$|¥|€|£|\$)\s*([\d,]+\.?\d*)\s*(?:total|合計|小計)/gi,
+  ];
+
+  for (const pattern of totalPatterns) {
+    const matches = [...cleanText.matchAll(pattern)];
+    if (matches.length > 0) {
+      const lastMatch = matches[matches.length - 1];
+      const currencyStr = (lastMatch[1] || '').trim().toUpperCase();
+      const amountStr = (lastMatch[2] || '').replace(/,/g, '');
+      const detectedCurrency = currencyMap[currencyStr] || 'HKD';
+      if (amountStr && parseFloat(amountStr) > 0) {
+        return { amount: amountStr, currency: detectedCurrency };
+      }
+    }
+  }
+
+  // 如果沒有找到 Total，嘗試找最大的金額數字（通常係總額）
+  const amountPattern = /([A-Z]{3}|HK\$|JP¥|US\$|NT\$|AU\$|SG\$|¥|€|£|\$)\s*([\d,]+\.?\d*)/gi;
+  const allMatches = [...cleanText.matchAll(amountPattern)];
+
+  if (allMatches.length > 0) {
+    // 找最大金額（通常係總額）
+    let maxAmount = 0;
+    let maxCurrency = 'HKD';
+    let maxAmountStr = '';
+
+    for (const match of allMatches) {
+      const currencyStr = match[1].trim().toUpperCase();
+      const amountStr = match[2].replace(/,/g, '');
+      const amount = parseFloat(amountStr);
+      if (amount > maxAmount) {
+        maxAmount = amount;
+        maxCurrency = currencyMap[currencyStr] || 'HKD';
+        maxAmountStr = amountStr;
+      }
+    }
+
+    if (maxAmountStr) {
+      return { amount: maxAmountStr, currency: maxCurrency };
+    }
+  }
+
+  // 最後嘗試：只找數字（無幣種符號）
+  const numberPattern = /\b(\d{1,6}(?:,\d{3})*(?:\.\d{1,2})?)\b/g;
+  const numbers = [...cleanText.matchAll(numberPattern)]
+    .map(m => parseFloat(m[1].replace(/,/g, '')))
+    .filter(n => n > 0 && n < 1000000);
+
+  if (numbers.length > 0) {
+    const maxNum = Math.max(...numbers);
+    return { amount: maxNum.toString(), currency: 'HKD' };
+  }
+
+  return null;
+}
+
 export default function HomePage() {
   const supabase = createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
   const [amount, setAmount]           = useState('');
@@ -74,6 +157,11 @@ export default function HomePage() {
 
   // 信用卡月度上限資訊
   const [cardLimitInfos, setCardLimitInfos] = useState<CardLimitInfo[]>([]);
+
+  // OCR 相關狀態
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrResult, setOcrResult]   = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 載入所有信用卡的月度上限和本期使用量
   useEffect(() => {
@@ -107,7 +195,6 @@ export default function HomePage() {
       const infos: CardLimitInfo[] = cards.map((card) => {
         const statDate = card.statement_date ?? 1;
         const cycleStart = getCycleStart(statDate);
-        const cycleEnd = new Date();
 
         const usedHKD = allTx
           .filter((tx) => tx.card_used === card.name)
@@ -179,6 +266,75 @@ export default function HomePage() {
     return null;
   }, [cardLimitInfos]);
 
+  // ── OCR：處理圖片掃描 ──────────────────────────────────────
+  const handleOcrScan = useCallback(async (file: File) => {
+    setOcrLoading(true);
+    setOcrResult(null);
+    setError(null);
+
+    try {
+      // 動態載入 Tesseract.js（只在需要時才載入，節省初始載入時間）
+      const Tesseract = (await import('tesseract.js')).default;
+
+      // 壓縮圖片（提升識別速度）
+      const compressedDataUrl = await new Promise<string>((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const maxSize = 1200;
+          let { width, height } = img;
+          if (width > maxSize || height > maxSize) {
+            if (width > height) {
+              height = Math.round((height * maxSize) / width);
+              width = maxSize;
+            } else {
+              width = Math.round((width * maxSize) / height);
+              height = maxSize;
+            }
+          }
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d')!;
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.85));
+        };
+        img.src = URL.createObjectURL(file);
+      });
+
+      // 用 Tesseract 識別文字（英文 + 數字，速度快）
+      const result = await Tesseract.recognize(compressedDataUrl, 'eng', {
+        logger: () => {}, // 靜默模式
+      });
+
+      const recognizedText = result.data.text;
+
+      // 從識別文字中提取金額和幣種
+      const extracted = extractAmountFromText(recognizedText);
+
+      if (extracted) {
+        setAmount(extracted.amount);
+        setCurrency(extracted.currency);
+        setOcrResult(`✅ 識別成功：${extracted.currency} ${extracted.amount}`);
+      } else {
+        setOcrResult('⚠️ 未能識別金額，請手動輸入');
+      }
+    } catch (err) {
+      console.error('OCR error:', err);
+      setOcrResult('❌ 掃描失敗，請手動輸入');
+    } finally {
+      setOcrLoading(false);
+    }
+  }, []);
+
+  const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      handleOcrScan(file);
+    }
+    // 重置 input，讓同一張圖可以再次選擇
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, [handleOcrScan]);
+
   // 現金で保存
   const handleSaveCash = useCallback(async () => {
     if (saving || hkdAmount <= 0) return;
@@ -199,7 +355,7 @@ export default function HomePage() {
       setTimeout(() => {
         setAmount(''); setDescription('');
         setSavedCard(null); setRecommendations([]); setHkdAmount(0);
-        setUseCash(false);
+        setUseCash(false); setOcrResult(null);
       }, 2000);
     }
   }, [amount, currency, exchangeRate, hkdAmount, category, description, saving]);
@@ -230,6 +386,7 @@ export default function HomePage() {
       setTimeout(() => {
         setAmount(''); setDescription('');
         setSavedCard(null); setRecommendations([]); setHkdAmount(0);
+        setOcrResult(null);
       }, 2000);
     }
   }, [amount, currency, exchangeRate, hkdAmount, category, description, saving]);
@@ -265,12 +422,47 @@ export default function HomePage() {
             border: '1px solid #EFE9E1',
           }}
         >
-          {/* 金額 + 幣種 */}
+          {/* 金額 + 幣種 + 📷 掃描按鈕 */}
           <div className="flex items-end gap-4">
             <div className="flex-1">
-              <label className="block text-[10px] tracking-widest uppercase mb-2" style={{ color: '#A8948A' }}>
-                金額
-              </label>
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-[10px] tracking-widest uppercase" style={{ color: '#A8948A' }}>
+                  金額
+                </label>
+                {/* 📷 掃描收據按鈕 */}
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={ocrLoading}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-medium transition-all active:scale-95 disabled:opacity-60"
+                  style={{
+                    background: ocrLoading ? '#EFE9E1' : '#FFF8EF',
+                    color: '#C4A482',
+                    border: '1px solid #E8D8C4',
+                  }}
+                >
+                  {ocrLoading ? (
+                    <>
+                      <span className="animate-spin inline-block">⏳</span>
+                      <span>識別中…</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>📷</span>
+                      <span>掃描收據</span>
+                    </>
+                  )}
+                </button>
+                {/* 隱藏的 file input */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+              </div>
               <input
                 type="number" inputMode="decimal" step="any"
                 value={amount} onChange={(e) => setAmount(e.target.value)}
@@ -298,6 +490,26 @@ export default function HomePage() {
               </select>
             </div>
           </div>
+
+          {/* OCR 識別結果提示 */}
+          {ocrResult && (
+            <div
+              className="flex items-center gap-2 text-xs rounded-2xl px-3 py-2 animate-fade-in-up"
+              style={{
+                background: ocrResult.startsWith('✅') ? '#F0F7F2' : ocrResult.startsWith('⚠️') ? '#FFF8EF' : '#FDF0F0',
+                color: ocrResult.startsWith('✅') ? '#7DAB8A' : ocrResult.startsWith('⚠️') ? '#C4A482' : '#C47A7A',
+                border: `1px solid ${ocrResult.startsWith('✅') ? '#C5DFD0' : ocrResult.startsWith('⚠️') ? '#E8D8C4' : '#F5D5D5'}`,
+              }}
+            >
+              {ocrResult}
+              <button
+                onClick={() => setOcrResult(null)}
+                className="ml-auto text-xs opacity-50 hover:opacity-100"
+              >
+                ✕
+              </button>
+            </div>
+          )}
 
           {/* 匯率表示 */}
           {currency !== 'HKD' && hkdAmount > 0 && !rateLoading && (
@@ -573,7 +785,7 @@ export default function HomePage() {
                             {rec.minSpendNote}
                           </p>
                         )}
-                        {/* ── 月度上限警告（新增）── */}
+                        {/* ── 月度上限警告 ── */}
                         {limitWarning && !isSaved && (
                           <p
                             className="text-[10px] leading-tight font-medium mt-0.5"
