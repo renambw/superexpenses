@@ -34,6 +34,7 @@ function getCycleStart(statementDate: number): Date {
   const year = today.getFullYear();
   const month = today.getMonth();
   const day = today.getDate();
+
   let cycleStart: Date;
   if (day >= statementDate) {
     cycleStart = new Date(year, month, statementDate);
@@ -67,51 +68,15 @@ function extractAmountFromText(text: string): { amount: string; currency: string
     'SGD': 'SGD', 'SG$': 'SGD',
   };
 
-  // 清理文字（移除多餘空格和換行）
+  // 清理文字
   const cleanText = text.replace(/\s+/g, ' ').trim();
 
-  // 嘗試匹配各種收據格式的金額
-  // 格式1: "Total: HKD 123.45" 或 "TOTAL HKD123.45"
-  // 格式2: "HK$ 123.45" 或 "¥1,234"
-  // 格式3: "合計 ¥1,234" 或 "Total ¥1,234"
-  // 格式4: "123.45 HKD"
+  // 1. 優先尋找 Total/合計/小計 後面的金額
+  const totalPatterns = [
+    /(?:total|合計|小計|お会計|お支払い|amount due|grand total|subtotal)[:\s]*([A-Z]{3}|HK\$|JP¥|US\$|NT\$|AU\$|SG\$|¥|€|£|\$)?\s*([\d,]+\.?\d*)/gi,
+  ];
 
-  // 優先尋找 Total/合計/小計 後面的金額
-    // 優先順序：合計/Total > 小計/Subtotal > 其他金額
-  const highPriorityKeywords = ['合計', 'total', 'grand total', 'お支払い', 'お会計', 'amount due'];
-  const lowPriorityKeywords = ['小計', 'subtotal', '対象額'];
-  const skipKeywords = ['お預り', 'お預かり', 'お釣', 'お釣り', 'change', 'cash'];
-
-  // 1. 嘗試匹配高優先級關鍵字
-  for (const keyword of highPriorityKeywords) {
-    // 優化正則，確保關鍵字和金額在同一行或非常接近
-    const pattern = new RegExp(`(?:${keyword})[:\\s]*([A-Z]{3}|HK\\$|JP¥|US\\$|NT\\$|AU\\$|SG\\$|¥|€|£|\\$)?\\s*([\\d,]+\\.?\\d*)`, 'gi');
-    const matches = [...cleanText.matchAll(pattern)];
-    if (matches.length > 0) {
-      // 檢查是否誤中副車（例如關鍵字附近有排除字眼）
-      for (let i = matches.length - 1; i >= 0; i--) {
-        const match = matches[i];
-        // 檢查匹配到的金額附近是否有排除關鍵字
-        const preContext = cleanText.substring(Math.max(0, match.index! - 15), match.index!); // 金額前15個字元
-        const postContext = cleanText.substring(match.index! + match[0].length, Math.min(cleanText.length, match.index! + match[0].length + 15)); // 金額後15個字元
-        const isBlacklisted = skipKeywords.some(skip => preContext.includes(skip) || postContext.includes(skip));
-        
-        if (!isBlacklisted) {
-          const currencyStr = (match[1] || '').trim().toUpperCase();
-          const amountStr = (match[2] || '').replace(/,/g, '');
-          const hasYenSymbol = cleanText.includes('¥') || cleanText.includes('円') || cleanText.includes('JPY');
-          const detectedCurrency = currencyMap[currencyStr] || (hasYenSymbol ? 'JPY' : 'HKD');
-          if (amountStr && parseFloat(amountStr) > 0) {
-            return { amount: amountStr, currency: detectedCurrency };
-          }
-        }
-      }
-    }
-  }
-
-  // 2. 嘗試匹配低優先級關鍵字（如果沒找到高優先級的）
-  for (const keyword of lowPriorityKeywords) {
-    const pattern = new RegExp(`(?:${keyword})[:\\s]*([A-Z]{3}|HK\\$|JP¥|US\\$|NT\\$|AU\\$|SG\\$|¥|€|£|\\$)?\\s*([\\d,]+\\.?\\d*)`, 'gi');
+  for (const pattern of totalPatterns) {
     const matches = [...cleanText.matchAll(pattern)];
     if (matches.length > 0) {
       const lastMatch = matches[matches.length - 1];
@@ -125,47 +90,37 @@ function extractAmountFromText(text: string): { amount: string; currency: string
     }
   }
 
-    // 如果沒有找到 Total，嘗試找最大的金額數字（通常係總額），但要排除黑名單字眼附近的數字
-  const amountPattern = /([A-Z]{3}|HK\$|JP¥|US\$|NT\$|AU\$|SG\$|¥|€|£|\$)?\s*([\d,]+\.\d{2}|[\d,]{3,})/gi;
+  // 2. 嘗試找最大的金額數字（排除掉找零/預收等字眼附近的數字）
+  const amountPattern = /([A-Z]{3}|HK\$|JP¥|US\$|NT\$|AU\$|SG\$|¥|€|£|\$)?\s*([\d,]+\.?\d*)/gi;
   const allMatches = [...cleanText.matchAll(amountPattern)];
+  const skipKeywords = ['お預り', 'お釣', 'change', 'cash'];
+
   if (allMatches.length > 0) {
     let maxAmount = 0;
     let maxCurrency = 'HKD';
     let maxAmountStr = '';
-    
+
     for (const match of allMatches) {
-      // 檢查匹配到的金額附近是否有排除關鍵字
-      const preContext = cleanText.substring(Math.max(0, match.index! - 15), match.index!); // 金額前15個字元
-      const postContext = cleanText.substring(match.index! + match[0].length, Math.min(cleanText.length, match.index! + match[0].length + 15)); // 金額後15個字元
-      const isBlacklisted = skipKeywords.some(skip => preContext.includes(skip) || postContext.includes(skip));
-      
-      if (!isBlacklisted) {
+      const amountStr = match[2].replace(/,/g, '');
+      const amount = parseFloat(amountStr);
+      if (isNaN(amount)) continue;
+
+      // 簡單的上下文檢查，排除找零
+      const context = cleanText.substring(Math.max(0, match.index! - 10), Math.min(cleanText.length, match.index! + 10));
+      const isBlacklisted = skipKeywords.some(skip => context.includes(skip));
+
+      if (!isBlacklisted && amount > maxAmount && amount < 1000000) {
+        maxAmount = amount;
         const currencyStr = (match[1] || '').trim().toUpperCase();
-        const amountStr = match[2].replace(/,/g, '');
-        const amount = parseFloat(amountStr);
-        if (amount > maxAmount) {
-          maxAmount = amount;
-          const hasYenSymbol = cleanText.includes('¥') || cleanText.includes('円') || cleanText.includes('JPY');
-          maxCurrency = currencyMap[currencyStr] || (hasYenSymbol ? 'JPY' : 'HKD');
-          maxAmountStr = amountStr;
-        }
+        const hasYenSymbol = cleanText.includes('¥') || cleanText.includes('円') || cleanText.includes('JPY');
+        maxCurrency = currencyMap[currencyStr] || (hasYenSymbol ? 'JPY' : 'HKD');
+        maxAmountStr = amountStr;
       }
     }
 
     if (maxAmountStr) {
       return { amount: maxAmountStr, currency: maxCurrency };
     }
-  }
-
-  // 最後嘗試：只找數字（無幣種符號）
-  const numberPattern = /\b(\d{1,6}(?:,\d{3})*(?:\.\d{1,2})?)\b/g;
-  const numbers = [...cleanText.matchAll(numberPattern)]
-    .map(m => parseFloat(m[1].replace(/,/g, '')))
-    .filter(n => n > 0 && n < 1000000);
-
-  if (numbers.length > 0) {
-    const maxNum = Math.max(...numbers);
-    return { amount: maxNum.toString(), currency: 'HKD' };
   }
 
   return null;
@@ -202,7 +157,6 @@ export default function HomePage() {
   // 載入所有信用卡的月度上限和本期使用量
   useEffect(() => {
     const loadCardLimits = async () => {
-      // 只取有設定月度上限的卡
       const { data: cardData, error: cardError } = await supabase
         .from('credit_cards')
         .select('id, name, statement_date, user_monthly_limit')
@@ -211,8 +165,6 @@ export default function HomePage() {
       if (cardError || !cardData || cardData.length === 0) return;
 
       const cards = cardData as Pick<CreditCard, 'id' | 'name' | 'statement_date' | 'user_monthly_limit'>[];
-
-      // 找最早的本期開始日期
       const earliestStart = cards.reduce((earliest, card) => {
         const start = getCycleStart(card.statement_date ?? 1);
         return start < earliest ? start : earliest;
@@ -231,7 +183,6 @@ export default function HomePage() {
       const infos: CardLimitInfo[] = cards.map((card) => {
         const statDate = card.statement_date ?? 1;
         const cycleStart = getCycleStart(statDate);
-
         const usedHKD = allTx
           .filter((tx) => tx.card_used === card.name)
           .reduce((sum, tx) => sum + Number(tx.amount_hkd), 0);
@@ -283,7 +234,6 @@ export default function HomePage() {
       finally { setRecLoading(false); }
     };
     run();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hkdAmount, category, useCash]);
 
   // 取得某張卡的月度上限警告訊息
@@ -309,7 +259,6 @@ export default function HomePage() {
     setError(null);
 
     try {
-      // 用 Canvas API 壓縮圖片（瀏覽器內建，唔需要任何套件）
       const compressedDataUrl = await new Promise<string>((resolve) => {
         const img = new Image();
         img.onload = () => {
@@ -334,7 +283,6 @@ export default function HomePage() {
         img.src = URL.createObjectURL(file);
       });
 
-      // 動態從 CDN 載入 Tesseract.js（唔需要安裝套件）
       await new Promise<void>((resolve, reject) => {
         if ((window as any).Tesseract) { resolve(); return; }
         const script = document.createElement('script');
@@ -350,8 +298,6 @@ export default function HomePage() {
       });
 
       const recognizedText = result.data.text;
-
-      // 從識別文字中提取金額和幣種
       const extracted = extractAmountFromText(recognizedText);
 
       if (extracted) {
@@ -371,22 +317,19 @@ export default function HomePage() {
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      handleOcrScan(file);
-    }
-    // 重置 input，讓同一張圖可以再次選擇
+    if (file) handleOcrScan(file);
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, [handleOcrScan]);
 
-  // 現金で保存
-  const handleSaveCash = useCallback(async () => {
+  // 保存処理
+  const handleSaveTransaction = async (cardName: string, milesEarned: number) => {
     if (saving || hkdAmount <= 0) return;
     setSaving(true); setError(null);
     const { error: dbErr } = await supabase.from('transactions').insert([{
       amount_original: parseFloat(amount), currency,
       exchange_rate: exchangeRate, amount_hkd: hkdAmount,
-      category, card_used: CASH_CARD_NAME,
-      miles_earned: 0,
+      category, card_used: cardName,
+      miles_earned: milesEarned,
       is_overseas: currency !== 'HKD',
       description: description || null,
     }]);
@@ -394,488 +337,235 @@ export default function HomePage() {
     if (dbErr) {
       setError('儲存失敗：' + dbErr.message);
     } else {
-      setSavedCard(CASH_CARD_NAME);
+      setSavedCard(cardName);
+      if (cardName !== CASH_CARD_NAME) {
+        setCardLimitInfos(prev => prev.map(info => 
+          info.cardName === cardName ? { ...info, usedHKD: info.usedHKD + hkdAmount } : info
+        ));
+      }
       setTimeout(() => {
         setAmount(''); setDescription('');
         setSavedCard(null); setRecommendations([]); setHkdAmount(0);
         setUseCash(false); setOcrResult(null);
       }, 2000);
     }
-  }, [amount, currency, exchangeRate, hkdAmount, category, description, saving]);
-
-  // 信用卡で保存
-  const handleSave = useCallback(async (rec: CardRecommendation) => {
-    if (saving) return;
-    setSaving(true); setError(null);
-    const { error: dbErr } = await supabase.from('transactions').insert([{
-      amount_original: parseFloat(amount), currency,
-      exchange_rate: exchangeRate, amount_hkd: hkdAmount,
-      category, card_used: rec.cardName,
-      miles_earned: rec.milesEarned,
-      is_overseas: currency !== 'HKD',
-      description: description || null,
-    }]);
-    setSaving(false);
-    if (dbErr) {
-      setError('儲存失敗：' + dbErr.message);
-    } else {
-      setSavedCard(rec.cardName);
-      // 更新本地的 cardLimitInfos（即時反映）
-      setCardLimitInfos((prev) => prev.map((info) =>
-        info.cardName === rec.cardName
-          ? { ...info, usedHKD: info.usedHKD + hkdAmount }
-          : info
-      ));
-      setTimeout(() => {
-        setAmount(''); setDescription('');
-        setSavedCard(null); setRecommendations([]); setHkdAmount(0);
-        setOcrResult(null);
-      }, 2000);
-    }
-  }, [amount, currency, exchangeRate, hkdAmount, category, description, saving]);
+  };
 
   return (
-    <div className="min-h-screen" style={{ background: '#EFE9E1' }}>
-      <div className="max-w-md mx-auto px-5 pt-12 pb-6 space-y-5">
-
-        {/* ── Header ── */}
+    <div className="min-h-screen pb-20" style={{ background: '#F7F3F0' }}>
+      <div className="max-w-md mx-auto px-5 pt-12 space-y-8">
+        {/* Header */}
         <header className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold" style={{ color: '#5C4A43' }}>
-              記帳 ✏️
+          <div className="space-y-1">
+            <h1 className="text-3xl font-bold tracking-tight" style={{ color: '#5C4A43' }}>
+              Super Expenses 🐧
             </h1>
-            <p className="text-[10px] mt-0.5 tracking-widest uppercase" style={{ color: '#A8948A' }}>
-              🐧記帳本🐧
+            <p className="text-xs font-medium opacity-60" style={{ color: '#9A7350' }}>
+              優雅地追蹤每一筆消費與里數
             </p>
           </div>
-          <div
-            className="w-10 h-10 rounded-full flex items-center justify-center text-lg"
-            style={{ background: '#FFFDF9', boxShadow: '0 2px 8px rgba(92,74,67,0.10)' }}
+          <button
+            onClick={() => window.location.href = '/dashboard'}
+            className="w-10 h-10 rounded-2xl flex items-center justify-center shadow-sm transition-all active:scale-90"
+            style={{ background: '#FFFDF9', color: '#C4A482', border: '1px solid #EFE9E1' }}
           >
-            ☕
-          </div>
+            📊
+          </button>
         </header>
 
-        {/* ── 入力カード ── */}
-        <section
-          className="rounded-3xl p-6 space-y-5"
-          style={{
-            background: '#FFFDF9',
-            boxShadow: '0 4px 20px rgba(92,74,67,0.10)',
-            border: '1px solid #EFE9E1',
-          }}
-        >
-          {/* 金額 + 幣種 + 📷 掃描按鈕 */}
-          <div className="flex items-end gap-4">
-            <div className="flex-1">
-              <div className="flex items-center justify-between mb-2">
-                <label className="block text-[10px] tracking-widest uppercase" style={{ color: '#A8948A' }}>
-                  金額
-                </label>
-                {/* 📷 掃描收據按鈕 */}
+        {/* Input Card */}
+        <div className="rounded-[2.5rem] p-8 space-y-8 shadow-xl shadow-brown-100/20" style={{ background: '#FFFDF9', border: '1px solid #EFE9E1' }}>
+          {/* Amount Input */}
+          <div className="space-y-3">
+            <div className="flex justify-between items-end">
+              <label className="text-[10px] font-bold tracking-[0.2em] uppercase opacity-40" style={{ color: '#5C4A43' }}>
+                輸入金額
+              </label>
+              <div className="flex gap-2">
                 <button
-                  type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={ocrLoading}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-medium transition-all active:scale-95 disabled:opacity-60"
-                  style={{
-                    background: ocrLoading ? '#EFE9E1' : '#FFF8EF',
-                    color: '#C4A482',
-                    border: '1px solid #E8D8C4',
-                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold transition-all active:scale-95 disabled:opacity-50"
+                  style={{ background: '#EFE9E1', color: '#9A7350' }}
                 >
-                  {ocrLoading ? (
-                    <>
-                      <span className="animate-spin inline-block">⏳</span>
-                      <span>識別中…</span>
-                    </>
-                  ) : (
-                    <>
-                      <span>📷</span>
-                      <span>掃描收據</span>
-                    </>
-                  )}
+                  {ocrLoading ? '⌛ 掃描中...' : '📸 掃描收據'}
                 </button>
-                {/* 隱藏的 file input */}
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  onChange={handleFileChange}
-                  className="hidden"
-                />
+                <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" className="hidden" />
               </div>
+            </div>
+            <div className="flex items-center gap-4 border-b-2 pb-2 transition-colors focus-within:border-brown-400" style={{ borderColor: '#E0D4C6' }}>
+              <select
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value)}
+                className="bg-transparent text-lg font-bold outline-none cursor-pointer"
+                style={{ color: '#9A7350' }}
+              >
+                {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
               <input
-                type="number" inputMode="decimal" step="any"
-                value={amount} onChange={(e) => setAmount(e.target.value)}
+                type="number"
+                inputMode="decimal"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
                 placeholder="0.00"
-                className="w-full text-4xl font-light bg-transparent outline-none pb-2 placeholder:opacity-30"
-                style={{
-                  color: '#5C4A43',
-                  borderBottom: '1.5px solid #E0D4C6',
-                  caretColor: '#C4A482',
-                }}
-                onFocus={(e) => (e.target.style.borderBottomColor = '#C4A482')}
-                onBlur={(e) => (e.target.style.borderBottomColor = '#E0D4C6')}
+                className="w-full text-4xl font-light bg-transparent outline-none placeholder:opacity-20"
+                style={{ color: '#5C4A43' }}
               />
             </div>
-            <div className="w-20 pb-2">
-              <label className="block text-[10px] tracking-widest uppercase mb-2" style={{ color: '#A8948A' }}>
-                幣種
-              </label>
-              <select
-                value={currency} onChange={(e) => setCurrency(e.target.value)}
-                className="w-full text-xl font-light bg-transparent outline-none pb-2 cursor-pointer appearance-none"
-                style={{ color: '#5C4A43', borderBottom: '1.5px solid #E0D4C6' }}
-              >
-                {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </div>
           </div>
 
-          {/* OCR 識別結果提示 */}
+          {/* OCR Result Tip */}
           {ocrResult && (
-            <div
-              className="flex items-center gap-2 text-xs rounded-2xl px-3 py-2 animate-fade-in-up"
+            <div className="flex items-center gap-2 text-xs rounded-2xl px-3 py-2 animate-fade-in-up"
               style={{
-                background: ocrResult.startsWith('✅') ? '#F0F7F2' : ocrResult.startsWith('⚠️') ? '#FFF8EF' : '#FDF0F0',
-                color: ocrResult.startsWith('✅') ? '#7DAB8A' : ocrResult.startsWith('⚠️') ? '#C4A482' : '#C47A7A',
-                border: `1px solid ${ocrResult.startsWith('✅') ? '#C5DFD0' : ocrResult.startsWith('⚠️') ? '#E8D8C4' : '#F5D5D5'}`,
-              }}
-            >
+                background: ocrResult.startsWith('✅') ? '#F0F7F2' : '#FFF8EF',
+                color: ocrResult.startsWith('✅') ? '#7DAB8A' : '#C4A482',
+                border: `1px solid ${ocrResult.startsWith('✅') ? '#C5DFD0' : '#E8D8C4'}`
+              }}>
               {ocrResult}
-              <button
-                onClick={() => setOcrResult(null)}
-                className="ml-auto text-xs opacity-50 hover:opacity-100"
-              >
-                ✕
-              </button>
+              <button onClick={() => setOcrResult(null)} className="ml-auto opacity-50">✕</button>
             </div>
           )}
 
-          {/* 匯率表示 */}
-          {currency !== 'HKD' && hkdAmount > 0 && !rateLoading && (
-            <div
-              className="flex justify-between text-xs rounded-2xl px-3 py-2 animate-fade-in-up"
-              style={{ background: '#EFE9E1', color: '#A8948A' }}
-            >
-              <span>1 {currency} = {exchangeRate.toFixed(4)} HKD（{rateDate}）</span>
-              <span className="font-semibold" style={{ color: '#9A7350' }}>
-                ≈ HKD {hkdAmount.toFixed(2)}
-              </span>
-            </div>
-          )}
-          {rateLoading && (
-            <p className="text-xs animate-pulse" style={{ color: '#CDB99F' }}>
-              🌸 正在取得匯率…
-            </p>
-          )}
-
-          {/* 分類タグ */}
-          <div>
-            <label className="block text-[10px] tracking-widest uppercase mb-3" style={{ color: '#A8948A' }}>
-              分類
+          {/* Category Selector */}
+          <div className="space-y-4">
+            <label className="text-[10px] font-bold tracking-[0.2em] uppercase opacity-40" style={{ color: '#5C4A43' }}>
+              選擇分類
             </label>
             <div className="flex flex-wrap gap-2">
-              {CATEGORIES.map(({ label, emoji }) => {
-                const active = category === label;
-                return (
-                  <button
-                    key={label}
-                    onClick={() => setCategory(label)}
-                    className="px-3 py-1.5 rounded-full text-xs font-medium transition-all active:scale-95"
-                    style={{
-                      background: active ? '#C4A482' : '#EFE9E1',
-                      color: active ? '#FFFDF9' : '#9A7350',
-                      boxShadow: active ? '0 2px 8px rgba(196,164,130,0.35)' : 'none',
-                    }}
-                  >
-                    {emoji} {label}
-                  </button>
-                );
-              })}
+              {CATEGORIES.map(({ label, emoji }) => (
+                <button
+                  key={label}
+                  onClick={() => setCategory(label)}
+                  className="px-4 py-2 rounded-full text-xs font-medium transition-all active:scale-95"
+                  style={{
+                    background: category === label ? '#C4A482' : '#EFE9E1',
+                    color: category === label ? '#FFFDF9' : '#9A7350',
+                    boxShadow: category === label ? '0 4px 12px rgba(196,164,130,0.3)' : 'none'
+                  }}
+                >
+                  {emoji} {label}
+                </button>
+              ))}
             </div>
           </div>
 
-          {/* 支払い方法：現金トグル */}
-          <div>
-            <label className="block text-[10px] tracking-widest uppercase mb-3" style={{ color: '#A8948A' }}>
-              支付方式
-            </label>
-            <div className="flex gap-2">
-              {/* 信用卡ボタン */}
+          {/* Description & Cash Toggle */}
+          <div className="grid grid-cols-1 gap-6">
+            <div className="space-y-3">
+              <label className="text-[10px] font-bold tracking-[0.2em] uppercase opacity-40" style={{ color: '#5C4A43' }}>
+                備注（選填）
+              </label>
+              <input
+                type="text"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="例如：新宿拉麵 🍜"
+                className="w-full text-sm bg-transparent border-b pb-2 outline-none placeholder:opacity-30"
+                style={{ color: '#5C4A43', borderColor: '#E0D4C6' }}
+              />
+            </div>
+            <div className="flex items-center justify-between p-4 rounded-3xl" style={{ background: '#FAF7F3' }}>
+              <div className="flex items-center gap-3">
+                <span className="text-xl">💵</span>
+                <div>
+                  <p className="text-sm font-bold" style={{ color: '#5C4A43' }}>現金支付</p>
+                  <p className="text-[10px] opacity-50">不計算里數回贈</p>
+                </div>
+              </div>
               <button
-                onClick={() => setUseCash(false)}
-                className="flex-1 py-2.5 rounded-2xl text-sm font-medium transition-all active:scale-95"
-                style={{
-                  background: !useCash ? '#C4A482' : '#EFE9E1',
-                  color: !useCash ? '#FFFDF9' : '#9A7350',
-                  boxShadow: !useCash ? '0 2px 8px rgba(196,164,130,0.35)' : 'none',
-                  border: !useCash ? '1.5px solid transparent' : '1.5px solid #E0D4C6',
-                }}
+                onClick={() => setUseCash(!useCash)}
+                className="w-12 h-6 rounded-full transition-all relative"
+                style={{ background: useCash ? '#C4A482' : '#E0D4C6' }}
               >
-                💳 信用卡
-              </button>
-              {/* 現金ボタン */}
-              <button
-                onClick={() => setUseCash(true)}
-                className="flex-1 py-2.5 rounded-2xl text-sm font-medium transition-all active:scale-95"
-                style={{
-                  background: useCash ? '#9A7350' : '#EFE9E1',
-                  color: useCash ? '#FFFDF9' : '#9A7350',
-                  boxShadow: useCash ? '0 2px 8px rgba(154,115,80,0.35)' : 'none',
-                  border: useCash ? '1.5px solid transparent' : '1.5px solid #E0D4C6',
-                }}
-              >
-                💵 現金
+                <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${useCash ? 'left-7' : 'left-1'}`} />
               </button>
             </div>
           </div>
+        </div>
 
-          {/* 備注 */}
-          <div>
-            <label className="block text-[10px] tracking-widest uppercase mb-2" style={{ color: '#A8948A' }}>
-              備注（選填）
-            </label>
-            <input
-              type="text" value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="例：新宿拉麵 🍜"
-              className="w-full text-sm bg-transparent outline-none pb-2 placeholder:opacity-40 transition-colors"
-              style={{
-                color: '#5C4A43',
-                borderBottom: '1.5px solid #E0D4C6',
-                caretColor: '#C4A482',
-              }}
-              onFocus={(e) => (e.target.style.borderBottomColor = '#C4A482')}
-              onBlur={(e) => (e.target.style.borderBottomColor = '#E0D4C6')}
-            />
-          </div>
-        </section>
-
-        {/* ── エラー ── */}
+        {/* Error Message */}
         {error && (
-          <div
-            className="rounded-2xl px-4 py-3 text-sm animate-fade-in-up"
-            style={{ background: '#FDF0F0', color: '#C47A7A', border: '1px solid #F5D5D5' }}
-          >
+          <div className="p-4 rounded-2xl text-sm text-center animate-shake" style={{ background: '#FDF0F0', color: '#C47A7A', border: '1px solid #F5D5D5' }}>
             {error}
           </div>
         )}
 
-        {/* ── 現金モード：直接記録ボタン ── */}
-        {useCash && hkdAmount > 0 && (
-          <section className="animate-fade-in-up">
-            <h2 className="text-[10px] tracking-widest uppercase px-1 mb-3" style={{ color: '#A8948A' }}>
-              💵 現金支付
-            </h2>
+        {/* Recommendations or Save Button */}
+        <section className="space-y-4">
+          {useCash ? (
             <button
-              onClick={handleSaveCash}
-              disabled={saving || !!savedCard}
-              className={`${CARD_BASE} disabled:cursor-default`}
-              style={
-                savedCard === CASH_CARD_NAME
-                  ? { background: '#F0F7F2', border: '1.5px solid #7DAB8A', boxShadow: 'none' }
-                  : {
-                      background: 'linear-gradient(135deg, #7A6A5A 0%, #9A8A7A 100%)',
-                      border: '1.5px solid transparent',
-                      boxShadow: '0 6px 20px rgba(122,106,90,0.30)',
-                    }
-              }
+              onClick={() => handleSaveTransaction(CASH_CARD_NAME, 0)}
+              disabled={saving || hkdAmount <= 0}
+              className={`${CARD_BASE} text-center py-5 font-bold text-lg shadow-lg`}
+              style={{
+                background: savedCard === CASH_CARD_NAME ? '#7DAB8A' : 'linear-gradient(135deg, #7A6A5A 0%, #9A8A7A 100%)',
+                color: '#FFFDF9',
+                border: 'none'
+              }}
             >
-              <div className="flex justify-between items-center">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-sm" style={{ color: savedCard === CASH_CARD_NAME ? '#7DAB8A' : '#FFFDF9' }}>
-                      💵 現金
-                    </span>
-                    <span
-                      className="text-[9px] px-2 py-0.5 rounded-full font-bold"
-                      style={{ background: 'rgba(255,253,249,0.20)', color: '#FFFDF9' }}
-                    >
-                      不賺里數
-                    </span>
-                  </div>
-                  <p className="text-xs" style={{ color: 'rgba(255,253,249,0.70)' }}>
-                    HKD {hkdAmount.toFixed(2)} · 里數 0
-                  </p>
-                </div>
-                <div className="text-right">
-                  {savedCard === CASH_CARD_NAME ? (
-                    <span className="font-semibold text-sm" style={{ color: '#7DAB8A' }}>已記錄 ✓</span>
-                  ) : (
-                    <>
-                      <p className="text-2xl font-light" style={{ color: '#FFFDF9' }}>0</p>
-                      <p className="text-[10px]" style={{ color: 'rgba(255,253,249,0.65)' }}>Asia Miles</p>
-                    </>
-                  )}
-                </div>
-              </div>
+              {savedCard === CASH_CARD_NAME ? '✅ 已成功記錄' : saving ? '⌛ 儲存中...' : '確認記錄現金支出'}
             </button>
-            <p className="text-[10px] text-center pt-2" style={{ color: '#CDB99F' }}>
-              點擊記錄現金消費（里數為 0）🌸
-            </p>
-          </section>
-        )}
-
-        {/* ── 信用卡推薦リスト ── */}
-        {!useCash && (recLoading || recommendations.length > 0) && (
-          <section className="space-y-3 animate-fade-in-up">
-            <h2 className="text-[10px] tracking-widest uppercase px-1" style={{ color: '#A8948A' }}>
-              🌸 最佳信用卡推薦
-            </h2>
-
-            {recLoading ? (
+          ) : (
+            <>
+              <h2 className="text-[10px] font-bold tracking-[0.2em] uppercase opacity-40 px-2" style={{ color: '#5C4A43' }}>
+                推薦使用的信用卡
+              </h2>
               <div className="space-y-3">
-                {[1, 2, 3].map((i) => <div key={i} className="h-16 skeleton" />)}
-              </div>
-            ) : (
-              recommendations.map((rec, index) => {
-                const isSaved = savedCard === rec.cardName;
-                const isBest  = index === 0;
-                // 計算月度上限警告
-                const limitWarning = hkdAmount > 0 ? getMonthlyLimitWarning(rec.cardName, hkdAmount) : null;
-
-                return (
-                  <button
-                    key={rec.cardName}
-                    onClick={() => handleSave(rec)}
-                    disabled={saving || !!savedCard}
-                    className={`${CARD_BASE} disabled:cursor-default`}
-                    style={
-                      isSaved
-                        ? { background: '#F0F7F2', border: '1.5px solid #7DAB8A', boxShadow: 'none' }
-                        : isBest
-                        ? {
-                            background: 'linear-gradient(135deg, #9A7350 0%, #C4A482 100%)',
-                            border: '1.5px solid transparent',
-                            boxShadow: '0 6px 20px rgba(154,115,80,0.30)',
-                          }
-                        : {
-                            background: '#FFFDF9',
-                            border: '1.5px solid #E0D4C6',
-                            boxShadow: '0 2px 8px rgba(92,74,67,0.06)',
-                          }
-                    }
-                  >
-                    <div className="flex justify-between items-start gap-2">
-                      <div className="space-y-1 min-w-0">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span
-                            className="font-semibold text-sm"
-                            style={{ color: isBest && !isSaved ? '#FFFDF9' : '#5C4A43' }}
-                          >
-                            {rec.cardName}
-                          </span>
-                          {isBest && !isSaved && (
-                            <span
-                              className="text-[9px] px-2 py-0.5 rounded-full font-bold"
-                              style={{ background: 'rgba(255,253,249,0.25)', color: '#FFFDF9' }}
-                            >
-                              最佳 ✨
-                            </span>
-                          )}
-                          {rec.isOverseasBonus && (
-                            <span
-                              className="text-[9px] px-1.5 py-0.5 rounded-full"
-                              style={
-                                isBest && !isSaved
-                                  ? { background: 'rgba(255,253,249,0.2)', color: '#FFFDF9' }
-                                  : { background: '#FFF8EF', color: '#C4A482' }
-                              }
-                            >
-                              海外加成
-                            </span>
-                          )}
-                          {rec.isBelowMinSpend && (
-                            <span
-                              className="text-[9px] px-1.5 py-0.5 rounded-full"
-                              style={
-                                isBest && !isSaved
-                                  ? { background: 'rgba(253,236,228,0.25)', color: '#FDECE4' }
-                                  : { background: '#FDF3E8', color: '#C07A4A' }
-                              }
-                            >
-                              ⚠ 未達最低消費
-                            </span>
-                          )}
+                {recLoading ? (
+                  <div className="p-12 text-center space-y-3">
+                    <div className="w-6 h-6 border-2 border-t-transparent rounded-full animate-spin mx-auto" style={{ borderColor: '#C4A482' }} />
+                    <p className="text-xs opacity-50">正在計算最優里數回贈...</p>
+                  </div>
+                ) : recommendations.length > 0 ? (
+                  recommendations.map((rec, i) => {
+                    const warning = getMonthlyLimitWarning(rec.cardName, hkdAmount);
+                    return (
+                      <button
+                        key={rec.cardId}
+                        onClick={() => handleSaveTransaction(rec.cardName, rec.milesEarned)}
+                        disabled={saving}
+                        className={`${CARD_BASE} relative overflow-hidden group`}
+                        style={{
+                          background: savedCard === rec.cardName ? '#F0F7F2' : '#FFFDF9',
+                          borderColor: savedCard === rec.cardName ? '#7DAB8A' : '#EFE9E1'
+                        }}
+                      >
+                        <div className="flex justify-between items-start">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold px-2 py-0.5 rounded-md" style={{ background: i === 0 ? '#C4A482' : '#EFE9E1', color: i === 0 ? '#FFF' : '#9A7350' }}>
+                                {i === 0 ? '最佳' : `#${i + 1}`}
+                              </span>
+                              <span className="font-bold" style={{ color: '#5C4A43' }}>{rec.cardName}</span>
+                            </div>
+                            <p className="text-2xl font-light" style={{ color: '#9A7350' }}>
+                              +{Math.floor(rec.milesEarned).toLocaleString()} <span className="text-xs font-medium">里</span>
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-[10px] font-bold opacity-30 uppercase">預估回贈率</p>
+                            <p className="text-lg font-medium" style={{ color: '#C4A482' }}>{rec.effectiveRate.toFixed(2)}%</p>
+                          </div>
                         </div>
-                        <p
-                          className="text-xs"
-                          style={{ color: isBest && !isSaved ? 'rgba(255,253,249,0.80)' : '#A8948A' }}
-                        >
-                          HKD {rec.effectiveRate}/里
-                          {rec.isCapped && !rec.isBelowMinSpend && (
-                            <span style={{ color: isBest && !isSaved ? '#FDECE4' : '#D4956A' }}>
-                              {' '}⚠ 已達上限
-                            </span>
-                          )}
-                        </p>
-                        {rec.isCapped && rec.cappedNote && (
-                          <p
-                            className="text-[10px] leading-tight"
-                            style={{ color: isBest && !isSaved ? '#FDECE4' : '#D4956A' }}
-                          >
-                            {rec.cappedNote}
-                          </p>
+                        {warning && <p className="mt-2 text-[10px] font-bold p-2 rounded-lg" style={{ background: '#FFF0F0', color: '#C47A7A' }}>{warning}</p>}
+                        {savedCard === rec.cardName && (
+                          <div className="absolute inset-0 flex items-center justify-center bg-white/60 backdrop-blur-[2px] font-bold" style={{ color: '#7DAB8A' }}>
+                            ✅ 記錄成功
+                          </div>
                         )}
-                        {rec.isBelowMinSpend && rec.minSpendNote && (
-                          <p
-                            className="text-[10px] leading-tight"
-                            style={{ color: isBest && !isSaved ? '#FDECE4' : '#C07A4A' }}
-                          >
-                            {rec.minSpendNote}
-                          </p>
-                        )}
-                        {/* ── 月度上限警告 ── */}
-                        {limitWarning && !isSaved && (
-                          <p
-                            className="text-[10px] leading-tight font-medium mt-0.5"
-                            style={{
-                              color: isBest && !isSaved
-                                ? (limitWarning.startsWith('🚨') ? '#FFB3B3' : '#FFD9B3')
-                                : (limitWarning.startsWith('🚨') ? '#C47A7A' : '#D4956A'),
-                            }}
-                          >
-                            {limitWarning}
-                          </p>
-                        )}
-                      </div>
-                      <div className="text-right shrink-0">
-                        {isSaved ? (
-                          <span className="font-semibold text-sm" style={{ color: '#7DAB8A' }}>
-                            已記錄 ✓
-                          </span>
-                        ) : (
-                          <>
-                            <p
-                              className="text-2xl font-light"
-                              style={{ color: isBest ? '#FFFDF9' : '#5C4A43' }}
-                            >
-                              +{Math.floor(rec.milesEarned).toLocaleString()}
-                            </p>
-                            <p
-                              className="text-[10px]"
-                              style={{ color: isBest ? 'rgba(255,253,249,0.65)' : '#A8948A' }}
-                            >
-                              Asia Miles
-                            </p>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })
-            )}
-
-            <p className="text-[10px] text-center pt-1" style={{ color: '#CDB99F' }}>
-              點擊卡片即可記錄此筆消費 🌸
-            </p>
-          </section>
-        )}
-
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div className="p-12 text-center rounded-[2rem] border-2 border-dashed" style={{ borderColor: '#EFE9E1' }}>
+                    <p className="text-xs opacity-30">輸入金額後即可查看推薦卡片</p>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </section>
       </div>
     </div>
   );
