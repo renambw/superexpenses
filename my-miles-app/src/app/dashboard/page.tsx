@@ -266,11 +266,22 @@ export default function DashboardPage() {
       const totalMiles    = txs.reduce((s, t) => s + Number(t.miles_earned), 0);
 
       const catMap = new Map<string, number>();
-      txs.forEach((t) =>
-        catMap.set(t.category, (catMap.get(t.category) ?? 0) + Number(t.amount_hkd))
-      );
-      const categoryBreakdown = Array.from(catMap.entries())
-        .map(([category, total]) => ({ category: category as Category, total }))
+      txs.forEach((t) => {
+        // Ensure category is one of the predefined ones, default to '雜項' if unknown
+        const normalizedCategory = Object.keys(CATEGORY_META).includes(t.category)
+          ? t.category
+          : '雜項';
+        catMap.set(normalizedCategory, (catMap.get(normalizedCategory) ?? 0) + Number(t.amount_hkd));
+      });
+
+      // Initialize all categories with 0 and then merge with actual data
+      const initialCategoryBreakdown = Object.keys(CATEGORY_META).map(cat => ({
+        category: cat as Category,
+        total: catMap.get(cat) ?? 0
+      }));
+
+      const categoryBreakdown = initialCategoryBreakdown
+        .filter(item => item.total > 0) // Only show categories with actual spending
         .sort((a, b) => b.total - a.total);
 
       const cardMap = new Map<string, { total: number; miles: number }>();
