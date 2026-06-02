@@ -211,6 +211,7 @@ export default function DashboardPage() {
   const supabase = createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
   const [data, setData]       = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [selectedMonth, setSelectedMonth] = useState<string>(new Date().toISOString().substring(0, 7)); // YYYY-MM 形式
 
   // ── 里数目標（localStorage で永続化）──────────────────────
   const [milesGoal, setMilesGoal]         = useState<number>(10000);
@@ -251,14 +252,15 @@ export default function DashboardPage() {
   // ── データ取得 ──────────────────────────────────────────────
   useEffect(() => {
     const fetchData = async () => {
-      const firstDay = new Date(
-        new Date().getFullYear(), new Date().getMonth(), 1
-      ).toISOString();
+      const [year, month] = selectedMonth.split("-").map(Number);
+      const firstDay = new Date(year, month - 1, 1).toISOString();
+      const lastDay  = new Date(year, month, 0).toISOString();
 
       const { data: txs, error } = await supabase
         .from('transactions')
         .select('amount_hkd, miles_earned, category, card_used')
-        .gte('created_at', firstDay);
+        .gte("created_at", firstDay)
+        .lte("created_at", lastDay);
 
       if (error || !txs) { setLoading(false); return; }
 
@@ -300,7 +302,7 @@ export default function DashboardPage() {
       setLoading(false);
     };
     fetchData();
-  }, []);
+  }, [selectedMonth]);
 
   if (loading) {
     return (
@@ -321,7 +323,7 @@ export default function DashboardPage() {
   const milesProgress = hasGoal
     ? Math.min(((data?.totalMiles ?? 0) / milesGoal) * 100, 100)
     : 0;
-  const monthLabel = new Date().toLocaleDateString('zh-HK', { year: 'numeric', month: 'long' });
+  const monthLabel = new Date(selectedMonth + '-01').toLocaleDateString('zh-HK', { year: 'numeric', month: 'long' });
 
   const pieSlices: PieSlice[] = (data?.categoryBreakdown ?? []).map((item, i) => {
     const pct  = data!.totalSpentHKD > 0 ? (item.total / data!.totalSpentHKD) * 100 : 0;
@@ -345,9 +347,24 @@ export default function DashboardPage() {
             <h1 className="text-2xl font-semibold" style={{ color: '#5C4A43' }}>
               總覽 ☕
             </h1>
-            <p className="text-[10px] mt-0.5 tracking-widest uppercase" style={{ color: '#A8948A' }}>
-              {monthLabel}
-            </p>
+            <select
+              value={selectedMonth}
+              onChange={(e) => setSelectedMonth(e.target.value)}
+              className="text-[10px] mt-0.5 tracking-widest uppercase bg-transparent border-none focus:outline-none cursor-pointer"
+              style={{ color: '#A8948A' }}
+            >
+              {Array.from({ length: 5 }).map((_, i) => {
+                const date = new Date();
+                date.setMonth(date.getMonth() - i);
+                const value = date.toISOString().substring(0, 7);
+                const label = date.toLocaleDateString('zh-HK', { year: 'numeric', month: 'long' });
+                return (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                );
+              })}
+            </select>
           </div>
           <div
             className="px-3 py-1.5 rounded-full text-xs font-medium"
