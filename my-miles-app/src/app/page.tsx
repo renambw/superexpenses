@@ -77,42 +77,78 @@ function extractAmountFromText(text: string): { amount: string; currency: string
   // 格式4: "123.45 HKD"
 
   // 優先尋找 Total/合計/小計 後面的金額
-  const totalPatterns = [
-    /(?:total|合計|小計|お会計|お支払い|amount due|grand total|subtotal)[:\s]*([A-Z]{3}|HK\$|JP¥|US\$|NT\$|AU\$|SG\$|¥|€|£|\$)?\s*([\d,]+\.?\d*)/gi,
-    /([A-Z]{3}|HK\$|JP¥|US\$|NT\$|AU\$|SG\$|¥|€|£|\$)\s*([\d,]+\.?\d*)\s*(?:total|合計|小計)/gi,
-  ];
+    // 優先順序：合計/Total > 小計/Subtotal > 其他金額
+  const highPriorityKeywords = ['合計', 'total', 'grand total', 'お支払い', 'お会計', 'amount due'];
+  const lowPriorityKeywords = ['小計', 'subtotal', '対象額'];
+  const skipKeywords = ['お預り', 'お預かり', 'お釣', 'お釣り', 'change', 'cash'];
 
-  for (const pattern of totalPatterns) {
+  // 1. 嘗試匹配高優先級關鍵字
+  for (const keyword of highPriorityKeywords) {
+    // 優化正則，確保關鍵字和金額在同一行或非常接近
+    const pattern = new RegExp(`(?:${keyword})[:\\s]*([A-Z]{3}|HK\\$|JP¥|US\\$|NT\\$|AU\\$|SG\\$|¥|€|£|\\$)?\\s*([\\d,]+\\.?\\d*)`, 'gi');
+    const matches = [...cleanText.matchAll(pattern)];
+    if (matches.length > 0) {
+      // 檢查是否誤中副車（例如關鍵字附近有排除字眼）
+      for (let i = matches.length - 1; i >= 0; i--) {
+        const match = matches[i];
+        // 檢查匹配到的金額附近是否有排除關鍵字
+        const preContext = cleanText.substring(Math.max(0, match.index! - 15), match.index!); // 金額前15個字元
+        const postContext = cleanText.substring(match.index! + match[0].length, Math.min(cleanText.length, match.index! + match[0].length + 15)); // 金額後15個字元
+        const isBlacklisted = skipKeywords.some(skip => preContext.includes(skip) || postContext.includes(skip));
+        
+        if (!isBlacklisted) {
+          const currencyStr = (match[1] || '').trim().toUpperCase();
+          const amountStr = (match[2] || '').replace(/,/g, '');
+          const hasYenSymbol = cleanText.includes('¥') || cleanText.includes('円') || cleanText.includes('JPY');
+          const detectedCurrency = currencyMap[currencyStr] || (hasYenSymbol ? 'JPY' : 'HKD');
+          if (amountStr && parseFloat(amountStr) > 0) {
+            return { amount: amountStr, currency: detectedCurrency };
+          }
+        }
+      }
+    }
+  }
+
+  // 2. 嘗試匹配低優先級關鍵字（如果沒找到高優先級的）
+  for (const keyword of lowPriorityKeywords) {
+    const pattern = new RegExp(`(?:${keyword})[:\\s]*([A-Z]{3}|HK\\$|JP¥|US\\$|NT\\$|AU\\$|SG\\$|¥|€|£|\\$)?\\s*([\\d,]+\\.?\\d*)`, 'gi');
     const matches = [...cleanText.matchAll(pattern)];
     if (matches.length > 0) {
       const lastMatch = matches[matches.length - 1];
       const currencyStr = (lastMatch[1] || '').trim().toUpperCase();
       const amountStr = (lastMatch[2] || '').replace(/,/g, '');
-      const detectedCurrency = currencyMap[currencyStr] || 'HKD';
+      const hasYenSymbol = cleanText.includes('¥') || cleanText.includes('円') || cleanText.includes('JPY');
+      const detectedCurrency = currencyMap[currencyStr] || (hasYenSymbol ? 'JPY' : 'HKD');
       if (amountStr && parseFloat(amountStr) > 0) {
         return { amount: amountStr, currency: detectedCurrency };
       }
     }
   }
 
-  // 如果沒有找到 Total，嘗試找最大的金額數字（通常係總額）
-  const amountPattern = /([A-Z]{3}|HK\$|JP¥|US\$|NT\$|AU\$|SG\$|¥|€|£|\$)\s*([\d,]+\.?\d*)/gi;
+    // 如果沒有找到 Total，嘗試找最大的金額數字（通常係總額），但要排除黑名單字眼附近的數字
+  const amountPattern = /([A-Z]{3}|HK\$|JP¥|US\$|NT\$|AU\$|SG\$|¥|€|£|\$)?\s*([\d,]+\.\d{2}|[\d,]{3,})/gi;
   const allMatches = [...cleanText.matchAll(amountPattern)];
-
   if (allMatches.length > 0) {
-    // 找最大金額（通常係總額）
     let maxAmount = 0;
     let maxCurrency = 'HKD';
     let maxAmountStr = '';
-
+    
     for (const match of allMatches) {
-      const currencyStr = match[1].trim().toUpperCase();
-      const amountStr = match[2].replace(/,/g, '');
-      const amount = parseFloat(amountStr);
-      if (amount > maxAmount) {
-        maxAmount = amount;
-        maxCurrency = currencyMap[currencyStr] || 'HKD';
-        maxAmountStr = amountStr;
+      // 檢查匹配到的金額附近是否有排除關鍵字
+      const preContext = cleanText.substring(Math.max(0, match.index! - 15), match.index!); // 金額前15個字元
+      const postContext = cleanText.substring(match.index! + match[0].length, Math.min(cleanText.length, match.index! + match[0].length + 15)); // 金額後15個字元
+      const isBlacklisted = skipKeywords.some(skip => preContext.includes(skip) || postContext.includes(skip));
+      
+      if (!isBlacklisted) {
+        const currencyStr = (match[1] || '').trim().toUpperCase();
+        const amountStr = match[2].replace(/,/g, '');
+        const amount = parseFloat(amountStr);
+        if (amount > maxAmount) {
+          maxAmount = amount;
+          const hasYenSymbol = cleanText.includes('¥') || cleanText.includes('円') || cleanText.includes('JPY');
+          maxCurrency = currencyMap[currencyStr] || (hasYenSymbol ? 'JPY' : 'HKD');
+          maxAmountStr = amountStr;
+        }
       }
     }
 
