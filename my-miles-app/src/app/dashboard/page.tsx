@@ -256,9 +256,13 @@ export default function DashboardPage() {
       const firstDay = new Date(year, month - 1, 1).toISOString();
       const lastDay  = new Date(year, month, 0).toISOString();
 
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { setLoading(false); return; }
+
       const { data: txs, error } = await supabase
-        .from('transactions')
-        .select('amount_hkd, miles_earned, category, card_used')
+        .from("transactions")
+        .select("amount_hkd, miles_earned, category, card_used")
+        .eq("user_id", user.id)
         .gte("created_at", firstDay)
         .lte("created_at", lastDay);
 
