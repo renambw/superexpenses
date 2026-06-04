@@ -170,9 +170,13 @@ export default function HomePage() {
         return start < earliest ? start : earliest;
       }, new Date());
 
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { return; }
+
       const { data: txData, error: txError } = await supabase
         .from('transactions')
         .select('card_used, amount_hkd')
+        .eq('user_id', user.id)
         .gte('created_at', earliestStart.toISOString())
         .neq('card_used', '現金');
 
@@ -325,7 +329,15 @@ export default function HomePage() {
   const handleSaveTransaction = async (cardName: string, milesEarned: number) => {
     if (saving || hkdAmount <= 0) return;
     setSaving(true); setError(null);
-    const { error: dbErr } = await supabase.from('transactions').insert([{
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      setError("儲存失敗：用戶未登錄。");
+      setSaving(false);
+      return;
+    }
+
+    const { error: dbErr } = await supabase.from("transactions").insert([{
+      user_id: user.id,
       amount_original: parseFloat(amount), currency,
       exchange_rate: exchangeRate, amount_hkd: hkdAmount,
       category, card_used: cardName,
