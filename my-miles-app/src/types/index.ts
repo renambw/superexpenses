@@ -10,7 +10,8 @@ export type Category =
   | '通訊'
   | '手信/禮物'
   | '醫療/保險'
-  | '雜項';
+  | '雜項'
+  | '網購';
 
 // CardName は DB の name カラムに合わせて string に拡張
 export type CardName = string;
