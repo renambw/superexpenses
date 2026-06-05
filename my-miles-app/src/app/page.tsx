@@ -17,7 +17,6 @@ const CATEGORIES: { label: Category; emoji: string }[] = [
   { label: '手信/禮物', emoji: '🎁' },
   { label: '醫療/保險', emoji: '💊' },
   { label: '雜項',    emoji: '📋' },
-  { label: '網購',    emoji: '📦' },
 ];
 
 const CURRENCIES = ['HKD', 'JPY', 'USD', 'EUR', 'GBP', 'CNY', 'TWD', 'AUD', 'SGD'];
