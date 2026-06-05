@@ -253,12 +253,25 @@ export default function DashboardPage() {
   // ── データ取得 ──────────────────────────────────────────────
   useEffect(() => {
     const fetchData = async () => {
+      setLoading(true);
       const [year, month] = selectedMonth.split("-").map(Number);
       const firstDay = new Date(year, month - 1, 1).toISOString();
-      const lastDay  = new Date(year, month, 0).toISOString();
+      const lastDay  = new Date(year, month, 0, 23, 59, 59).toISOString();
 
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { setLoading(false); return; }
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError) {
+        console.error("Error fetching user:", userError);
+        setLoading(false);
+        return;
+      }
+      if (!user) {
+        console.log("No user logged in, setting loading to false.");
+        setLoading(false);
+        return;
+      }
+      console.log("Fetching data for user ID:", user.id);
+      console.log("Selected month:", selectedMonth);
+      console.log("Querying from:", firstDay, "to:", lastDay);
 
       const { data: txs, error } = await supabase
         .from("transactions")
@@ -267,28 +280,32 @@ export default function DashboardPage() {
         .gte("created_at", firstDay)
         .lte("created_at", lastDay);
 
-      if (error || !txs) { setLoading(false); return; }
+      if (error) {
+        console.error("Error fetching transactions:", error);
+        setLoading(false);
+        return;
+      }
+      if (!txs || txs.length === 0) {
+        console.log("No transactions found for user ID:", user.id, "in month:", selectedMonth);
+        setData({ totalSpentHKD: 0, totalMiles: 0, categoryBreakdown: [], cardBreakdown: [] });
+        setLoading(false);
+        return;
+      }
+      console.log("Fetched transactions count:", txs.length);
 
       const totalSpentHKD = txs.reduce((s, t) => s + Number(t.amount_hkd), 0);
       const totalMiles    = txs.reduce((s, t) => s + Number(t.miles_earned), 0);
 
       const catMap = new Map<string, number>();
       txs.forEach((t) => {
-        // Ensure category is one of the predefined ones, default to '雜項' if unknown
         const normalizedCategory = Object.keys(CATEGORY_META).includes(t.category)
           ? t.category
           : '雜項';
         catMap.set(normalizedCategory, (catMap.get(normalizedCategory) ?? 0) + Number(t.amount_hkd));
       });
 
-      // Initialize all categories with 0 and then merge with actual data
-      const initialCategoryBreakdown = Object.keys(CATEGORY_META).map(cat => ({
-        category: cat as Category,
-        total: catMap.get(cat) ?? 0
-      }));
-
-      const categoryBreakdown = initialCategoryBreakdown
-        .filter(item => item.total > 0) // Only show categories with actual spending
+      const categoryBreakdown = Array.from(catMap.entries())
+        .map(([cat, total]) => ({ category: cat as Category, total }))
         .sort((a, b) => b.total - a.total);
 
       const cardMap = new Map<string, { total: number; miles: number }>();
@@ -307,7 +324,7 @@ export default function DashboardPage() {
       setLoading(false);
     };
     fetchData();
-  }, [selectedMonth]);
+  }, [selectedMonth, supabase]);
 
   if (loading) {
     return (
@@ -323,12 +340,10 @@ export default function DashboardPage() {
     );
   }
 
-  // 目標が 0 の場合は進度条を非表示
   const hasGoal       = milesGoal > 0;
   const milesProgress = hasGoal
     ? Math.min(((data?.totalMiles ?? 0) / milesGoal) * 100, 100)
     : 0;
-  const monthLabel = new Date(selectedMonth + '-01').toLocaleDateString('zh-HK', { year: 'numeric', month: 'long' });
 
   const pieSlices: PieSlice[] = (data?.categoryBreakdown ?? []).map((item, i) => {
     const pct  = data!.totalSpentHKD > 0 ? (item.total / data!.totalSpentHKD) * 100 : 0;
@@ -379,245 +394,154 @@ export default function DashboardPage() {
           </div>
         </header>
 
-        {/* ── 本月總支出 ── */}
+        {/* ── 總額 Card ── */}
         <div
-          className="rounded-3xl p-8 text-center space-y-2"
+          className="rounded-[40px] p-8 text-center space-y-2 relative overflow-hidden"
           style={{
             background: 'linear-gradient(135deg, #9A7350 0%, #C4A482 100%)',
-            boxShadow: '0 8px 32px rgba(154,115,80,0.30)',
+            boxShadow: '0 10px 30px rgba(154,115,80,0.25)',
           }}
         >
-          <p className="text-[10px] tracking-widest uppercase" style={{ color: 'rgba(255,253,249,0.7)' }}>
-            本月總支出
-          </p>
-          <p className="text-5xl font-extralight tracking-tight" style={{ color: '#FFFDF9' }}>
-            ${(data?.totalSpentHKD ?? 0).toLocaleString('zh-HK', { maximumFractionDigits: 0 })}
-          </p>
-          <p className="text-xs" style={{ color: 'rgba(255,253,249,0.6)' }}>HKD</p>
+          <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-16 -mt-16 blur-2xl" />
+          <p className="text-white/70 text-xs font-medium tracking-widest uppercase">本月總支出</p>
+          <div className="flex items-baseline justify-center gap-1">
+            <span className="text-4xl font-bold text-white">
+              ${(data?.totalSpentHKD ?? 0).toLocaleString('zh-HK', { maximumFractionDigits: 0 })}
+            </span>
+          </div>
+          <p className="text-white/60 text-[10px] tracking-widest uppercase">HKD</p>
         </div>
 
-        {/* ── Asia Miles 進度（里数目標 動的編集対応）── */}
+        {/* ── 里數進度 ── */}
         <div
           className="rounded-3xl p-6 space-y-4"
-          style={{
-            background: '#FFFDF9',
-            boxShadow: '0 4px 20px rgba(92,74,67,0.08)',
-            border: '1px solid #EFE9E1',
-          }}
+          style={{ background: '#FFFDF9', border: '1px solid #EFE9E1' }}
         >
-          <div className="flex justify-between items-start">
-            <div className="flex-1 min-w-0">
-              <p className="text-[10px] tracking-widest uppercase mb-1" style={{ color: '#A8948A' }}>
-                🌸 Asia Miles 進度
-              </p>
-
-              {/* 目標行：表示 or 編集 */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-sm">🌸</span>
+              <span className="text-xs font-semibold" style={{ color: '#5C4A43' }}>ASIA MILES 進度</span>
+            </div>
+            <div className="text-right">
               {isEditingGoal ? (
-                <div className="flex items-center gap-2 mt-1">
+                <div className="flex items-center gap-1">
                   <input
                     ref={goalInputRef}
                     type="number"
-                    inputMode="numeric"
                     value={goalInput}
                     onChange={(e) => setGoalInput(e.target.value)}
+                    onBlur={handleGoalSave}
                     onKeyDown={handleGoalKeyDown}
-                    placeholder="輸入目標里數"
-                    className="w-32 text-sm bg-transparent outline-none pb-0.5 font-medium"
-                    style={{
-                      color: '#5C4A43',
-                      borderBottom: '1.5px solid #C4A482',
-                      caretColor: '#C4A482',
-                    }}
+                    className="w-20 px-1 py-0.5 text-xs border rounded outline-none"
+                    style={{ borderColor: '#C4A482', color: '#5C4A43' }}
                   />
-                  <button
-                    onClick={handleGoalSave}
-                    className="text-[10px] px-2.5 py-1 rounded-full font-semibold transition-all active:scale-90"
-                    style={{ background: '#C4A482', color: '#FFFDF9' }}
-                  >
-                    確認
-                  </button>
-                  <button
-                    onClick={() => setIsEditingGoal(false)}
-                    className="text-[10px] px-2.5 py-1 rounded-full transition-all active:scale-90"
-                    style={{ background: '#EFE9E1', color: '#9A7350' }}
-                  >
-                    取消
-                  </button>
                 </div>
               ) : (
-                <div className="flex items-center gap-1.5 mt-0.5">
-                  <p className="text-sm font-medium" style={{ color: '#5C4A43' }}>
-                    {hasGoal ? `目標 ${milesGoal.toLocaleString()} 里` : '未設定目標'}
-                  </p>
-                  {/* ✏️ 編集ボタン */}
-                  <button
-                    onClick={() => {
-                      setGoalInput(milesGoal > 0 ? String(milesGoal) : '');
-                      setIsEditingGoal(true);
-                    }}
-                    className="w-6 h-6 rounded-full flex items-center justify-center text-sm transition-all active:scale-90"
-                    style={{ background: '#EFE9E1', color: '#A8948A' }}
-                    title="修改里數目標"
-                    onMouseEnter={(e) => {
-                      (e.currentTarget as HTMLButtonElement).style.background = '#E0D4C6';
-                      (e.currentTarget as HTMLButtonElement).style.color = '#9A7350';
-                    }}
-                    onMouseLeave={(e) => {
-                      (e.currentTarget as HTMLButtonElement).style.background = '#EFE9E1';
-                      (e.currentTarget as HTMLButtonElement).style.color = '#A8948A';
-                    }}
-                  >
+                <div className="flex items-center gap-1">
+                  <span className="text-xs" style={{ color: '#A8948A' }}>目標 {milesGoal.toLocaleString()} 里</span>
+                  <button onClick={() => { setGoalInput(String(milesGoal)); setIsEditingGoal(true); }} className="text-xs">
                     ✏️
                   </button>
                 </div>
               )}
             </div>
-
-            {/* 已賺取里數（大字体） */}
-            <div className="text-right shrink-0">
-              <span className="text-3xl font-light" style={{ color: '#9A7350' }}>
-                {Math.floor(data?.totalMiles ?? 0).toLocaleString()}
-              </span>
-              <span className="text-xs ml-1" style={{ color: '#A8948A' }}>里</span>
-            </div>
           </div>
 
-          {/* 進度條：目標が 0 の場合は非表示 */}
-          {hasGoal ? (
-            <>
-              <div className="h-2.5 w-full rounded-full overflow-hidden" style={{ background: '#EFE9E1' }}>
+          <div className="flex items-baseline justify-end gap-1">
+            <span className="text-3xl font-bold" style={{ color: '#5C4A43' }}>
+              {(data?.totalMiles ?? 0).toLocaleString()}
+            </span>
+            <span className="text-xs" style={{ color: '#A8948A' }}>里</span>
+          </div>
+
+          {hasGoal && (
+            <div className="space-y-2">
+              <div className="h-2 w-full rounded-full bg-[#EFE9E1] overflow-hidden">
                 <div
-                  className="h-full rounded-full transition-all duration-1000 ease-out"
-                  style={{
-                    width: `${milesProgress}%`,
-                    background: 'linear-gradient(90deg, #9A7350, #C4A482)',
-                  }}
+                  className="h-full rounded-full transition-all duration-1000"
+                  style={{ width: `${milesProgress}%`, background: '#9A7350' }}
                 />
               </div>
-              <p className="text-xs text-right" style={{ color: '#A8948A' }}>
+              <p className="text-[10px] text-right" style={{ color: '#A8948A' }}>
                 已達成 {milesProgress.toFixed(1)}%
               </p>
-            </>
-          ) : (
-            <p className="text-xs" style={{ color: '#CDB99F' }}>
-              點擊 ✏️ 設定里數目標，即可顯示進度條
-            </p>
+            </div>
           )}
         </div>
 
-        {/* ── 支出分類圓餅圖 ── */}
-        {data && data.categoryBreakdown.length > 0 ? (
-          <div
-            className="rounded-3xl p-6 space-y-5"
-            style={{
-              background: '#FFFDF9',
-              boxShadow: '0 4px 20px rgba(92,74,67,0.08)',
-              border: '1px solid #EFE9E1',
-            }}
-          >
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold" style={{ color: '#5C4A43' }}>
-                支出分類 🍜
-              </h2>
-              <span
-                className="text-[10px] px-2 py-1 rounded-full"
-                style={{ background: '#EFE9E1', color: '#A8948A' }}
-              >
-                點擊扇形查看詳情
-              </span>
-            </div>
+        {/* ── 支出分類 ── */}
+        <div
+          className="rounded-3xl p-6 space-y-6"
+          style={{ background: '#FFFDF9', border: '1px solid #EFE9E1' }}
+        >
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold" style={{ color: '#5C4A43' }}>支出分類 🍜</h2>
+            <span className="text-[10px]" style={{ color: '#A8948A' }}>點擊扇形查看詳情</span>
+          </div>
 
-            <PieChart slices={pieSlices} total={data.totalSpentHKD} />
-
-            <div className="space-y-2.5 pt-2" style={{ borderTop: '1px solid #EFE9E1' }}>
-              <p className="text-[10px] tracking-widest uppercase" style={{ color: '#A8948A' }}>
-                金額明細
-              </p>
-              {data.categoryBreakdown.map(({ category, total }) => {
-                const pct  = data.totalSpentHKD > 0 ? (total / data.totalSpentHKD) * 100 : 0;
-                const meta = CATEGORY_META[category] ?? { emoji: '📋', color: '#A8948A', bg: '#EFE9E1' };
-                return (
-                  <div key={category} className="flex items-center gap-2">
-                    <span
-                      className="w-6 h-6 rounded-full flex items-center justify-center text-xs shrink-0"
-                      style={{ background: meta.bg }}
-                    >
-                      {meta.emoji}
-                    </span>
-                    <div className="flex-1 space-y-0.5">
-                      <div className="flex justify-between text-xs">
-                        <span style={{ color: '#5C4A43' }}>{category}</span>
-                        <span style={{ color: '#9A7350' }}>
-                          HKD {total.toLocaleString('zh-HK', { maximumFractionDigits: 0 })}
-                        </span>
-                      </div>
-                      <div className="h-1 w-full rounded-full overflow-hidden" style={{ background: '#EFE9E1' }}>
-                        <div
-                          className="h-full rounded-full transition-all duration-700"
-                          style={{ width: `${pct}%`, background: meta.color }}
-                        />
+          {data && data.categoryBreakdown.length > 0 ? (
+            <>
+              <PieChart slices={pieSlices} total={data.totalSpentHKD} />
+              <div className="space-y-3 pt-4 border-t border-[#EFE9E1]">
+                <p className="text-[10px] tracking-widest uppercase" style={{ color: '#A8948A' }}>金額明細</p>
+                {data.categoryBreakdown.map((item) => {
+                  const meta = CATEGORY_META[item.category] || { emoji: '📋', color: '#A8948A', bg: '#EFE9E1' };
+                  return (
+                    <div key={item.category} className="flex items-center gap-3">
+                      <span className="w-8 h-8 rounded-full flex items-center justify-center bg-[#FAF7F3] text-sm">
+                        {meta.emoji}
+                      </span>
+                      <div className="flex-1">
+                        <div className="flex justify-between text-xs mb-1">
+                          <span style={{ color: '#5C4A43' }}>{item.category}</span>
+                          <span style={{ color: '#9A7350' }}>HKD {item.total.toLocaleString()}</span>
+                        </div>
+                        <div className="h-1 w-full rounded-full bg-[#EFE9E1] overflow-hidden">
+                          <div
+                            className="h-full rounded-full"
+                            style={{ width: `${(item.total / data.totalSpentHKD) * 100}%`, background: meta.color }}
+                          />
+                        </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            <div className="py-10 text-center">
+              <span className="text-2xl">🌸</span>
+              <p className="text-xs mt-2" style={{ color: '#A8948A' }}>本月尚無消費紀錄</p>
             </div>
-          </div>
-        ) : (
-          <div
-            className="rounded-3xl p-10 text-center"
-            style={{ background: '#FFFDF9', border: '1px solid #EFE9E1' }}
-          >
-            <p className="text-2xl mb-2">🌸</p>
-            <p className="text-sm" style={{ color: '#A8948A' }}>本月尚無消費紀錄</p>
-            <p className="text-xs mt-1" style={{ color: '#CDB99F' }}>開始記帳後，分類統計將顯示於此</p>
-          </div>
-        )}
+          )}
+        </div>
 
         {/* ── 信用卡使用 ── */}
         {data && data.cardBreakdown.length > 0 && (
           <div
             className="rounded-3xl p-6 space-y-4"
-            style={{
-              background: '#FFFDF9',
-              boxShadow: '0 4px 20px rgba(92,74,67,0.08)',
-              border: '1px solid #EFE9E1',
-            }}
+            style={{ background: '#FFFDF9', border: '1px solid #EFE9E1' }}
           >
-            <h2 className="text-sm font-semibold" style={{ color: '#5C4A43' }}>
-              信用卡使用 🐦
-            </h2>
+            <h2 className="text-sm font-semibold" style={{ color: '#5C4A43' }}>信用卡使用 🐦</h2>
             <div className="space-y-3">
-              {data.cardBreakdown.map(({ card, total, miles }, i) => (
-                <div
-                  key={card}
-                  className="flex items-center gap-3 p-3 rounded-2xl"
-                  style={{ background: '#FAF7F3' }}
-                >
+              {data.cardBreakdown.map((item, i) => (
+                <div key={item.card} className="flex items-center gap-3 p-3 rounded-2xl bg-[#FAF7F3]">
                   <div
-                    className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
-                    style={{
-                      background: CARD_GRADIENTS[i % CARD_GRADIENTS.length],
-                      color: '#FFFDF9',
-                    }}
+                    className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold"
+                    style={{ background: CARD_GRADIENTS[i % CARD_GRADIENTS.length] }}
                   >
                     {i + 1}
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate" style={{ color: '#5C4A43' }}>{card}</p>
-                    <p className="text-xs mt-0.5" style={{ color: '#A8948A' }}>
-                      +{Math.floor(miles).toLocaleString()} Asia Miles
-                    </p>
+                  <div className="flex-1">
+                    <p className="text-xs font-semibold" style={{ color: '#5C4A43' }}>{item.card}</p>
+                    <p className="text-[10px]" style={{ color: '#A8948A' }}>+{item.miles.toLocaleString()} Asia Miles</p>
                   </div>
-                  <p className="text-sm font-semibold shrink-0" style={{ color: '#9A7350' }}>
-                    HKD {total.toLocaleString('zh-HK', { maximumFractionDigits: 0 })}
-                  </p>
+                  <p className="text-xs font-bold" style={{ color: '#9A7350' }}>HKD {item.total.toLocaleString()}</p>
                 </div>
               ))}
             </div>
           </div>
         )}
-
       </div>
     </div>
   );
