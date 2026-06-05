@@ -17,6 +17,7 @@ const CATEGORIES: { label: Category; emoji: string }[] = [
   { label: '手信/禮物', emoji: '🎁' },
   { label: '醫療/保險', emoji: '💊' },
   { label: '雜項',    emoji: '📋' },
+  { label: '網購',    emoji: '📦' },
 ];
 
 const CURRENCIES = ['HKD', 'JPY', 'USD', 'EUR', 'GBP', 'CNY', 'TWD', 'AUD', 'SGD'];
@@ -170,8 +171,16 @@ export default function HomePage() {
         return start < earliest ? start : earliest;
       }, new Date());
 
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { return; }
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError) {
+        console.error("loadCardLimits: Error fetching user:", userError);
+        return;
+      }
+      if (!user) {
+        console.log("loadCardLimits: No user logged in.");
+        return;
+      }
+      console.log("loadCardLimits: Fetching card limits for user ID:", user.id);
 
       const { data: txData, error: txError } = await supabase
         .from('transactions')
@@ -180,7 +189,10 @@ export default function HomePage() {
         .gte('created_at', earliestStart.toISOString())
         .neq('card_used', '現金');
 
-      if (txError) return;
+      if (txError) {
+        console.error("loadCardLimits: Error fetching transactions:", txError);
+        return;
+      }
 
       const allTx = txData as { card_used: string; amount_hkd: number }[];
 
